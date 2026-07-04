@@ -1,16 +1,16 @@
 """REST API endpoints for dashboard analytics and SIEM metric summaries."""
 from __future__ import annotations
 
-import logging
+from backend.core.logging import get_logger
 from typing import Any
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend.api import get_db
+from backend.api.dependencies import get_db
 from backend.services.dashboard_service import DashboardService
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter()
 

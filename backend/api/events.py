@@ -1,17 +1,17 @@
 """REST API endpoints for querying and managing security events."""
 from __future__ import annotations
 
-import logging
+from backend.core.logging import get_logger
 from datetime import datetime
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend.api import get_db
+from backend.api.dependencies import get_db
 from backend.services.event_service import EventService
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter()
 

@@ -9,7 +9,7 @@ from typing import Any, Iterable, Mapping
 from sqlalchemy import desc, select, func, delete
 from sqlalchemy.orm import Session
 
-from backend.database.models import SecurityEvent
+from backend.database.models import SecurityEvent, User
 
 
 def insert_event(session: Session, event: Mapping[str, Any]) -> SecurityEvent:
@@ -74,6 +74,8 @@ def get_events_by_username(
         .limit(limit)
     )
     return list(session.scalars(stmt).all())
+
+
 
 def get_event_by_id(session: Session, event_id: str) -> SecurityEvent | None:
     """Return a security event by its unique event_id."""
@@ -202,6 +204,126 @@ def delete_old_events(session: Session, days: int) -> int:
     session.commit()
 
     return result.rowcount or 0
+
+
+# =============================================================================
+# User CRUD Operations
+# =============================================================================
+
+def create_user(
+    session: Session,
+    *,
+    username: str,
+    email: str,
+    password_hash: str,
+    role: str = "analyst",
+) -> User:
+    """
+    Create a new application user.
+    """
+
+    user = User(
+        username=username,
+        email=email,
+        password_hash=password_hash,
+        role=role,
+    )
+
+    try:
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        return user
+
+    except Exception:
+        session.rollback()
+        raise
+
+
+def get_user_by_username(
+    session: Session,
+    username: str,
+) -> User | None:
+    """
+    Retrieve a user by username.
+    """
+
+    stmt = (
+        select(User)
+        .where(User.username == username)
+    )
+
+    return session.scalar(stmt)
+
+
+def get_user_by_email(
+    session: Session,
+    email: str,
+) -> User | None:
+    """
+    Retrieve a user by email.
+    """
+
+    stmt = (
+        select(User)
+        .where(User.email == email)
+    )
+
+    return session.scalar(stmt)
+
+
+def get_user_by_id(
+    session: Session,
+    user_id: int,
+) -> User | None:
+    """
+    Retrieve a user by primary key.
+    """
+
+    stmt = (
+        select(User)
+        .where(User.id == user_id)
+    )
+
+    return session.scalar(stmt)
+
+
+def list_users(
+    session: Session,
+) -> list[User]:
+    """
+    Return all users.
+    """
+
+    stmt = (
+        select(User)
+        .order_by(User.username)
+    )
+
+    return list(session.scalars(stmt).all())
+
+
+def delete_user(
+    session: Session,
+    user_id: int,
+) -> bool:
+    """
+    Delete a user.
+    """
+
+    user = get_user_by_id(session, user_id)
+
+    if user is None:
+        return False
+
+    try:
+        session.delete(user)
+        session.commit()
+        return True
+
+    except Exception:
+        session.rollback()
+        raise
 
 
 def _to_model(event: Mapping[str, Any]) -> SecurityEvent:

@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 *.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
 
 # Virtual Environment
 .venv/
@@ -11,25 +14,29 @@ venv/
 .env
 .env.*
 
-# VS Code
+# IDE
 .vscode/
+.idea/
+.cursor/
 
 # Node
 node_modules/
-
-# React
 dist/
 build/
 
 # Logs
 *.log
 
-# Pytest
-.pytest_cache/
-
-# Cursor
-.cursor/
-
 # OS
 .DS_Store
 Thumbs.db
+
+# Coverage
+htmlcov/
+.coverage
+
+# SQLite (if ever used)
+*.sqlite3
+
+# Misc
+*.swp

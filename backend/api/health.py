@@ -1,15 +1,15 @@
 """Health check API endpoint for CloudSync service readiness."""
 from __future__ import annotations
 
-import logging
+from backend.core.logging import get_logger
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from backend.api import get_db
+from backend.api.dependencies import get_db
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter()
 
