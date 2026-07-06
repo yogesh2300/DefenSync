@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import hashlib
 from datetime import datetime, timezone, timedelta
 from typing import Any, Iterable, Mapping
 
@@ -12,22 +13,12 @@ from sqlalchemy.orm import Session
 from backend.database.models import SecurityEvent, User
 
 
-def insert_event(
-    session: Session,
-    event: Mapping[str, Any],
-) -> SecurityEvent:
-    """
-    Persist a single security event.
-
-    Transaction management is handled by the service layer.
-    """
-
+def insert_event(session: Session, event: Mapping[str, Any]) -> SecurityEvent:
+    """Persist a single security event."""
     record = _to_model(event)
-
     session.add(record)
-
     session.flush()
-
+    session.refresh(record)
     return record
 
 
@@ -86,11 +77,18 @@ def get_events_by_username(
     return list(session.scalars(stmt).all())
 
 
-
 def get_event_by_id(session: Session, event_id: str) -> SecurityEvent | None:
     """Return a security event by its unique event_id."""
     stmt = select(SecurityEvent).where(SecurityEvent.event_id == event_id)
     return session.scalar(stmt)
+
+
+def get_existing_event_ids(session: Session, event_ids: list[str]) -> set[str]:
+    """Retrieve the set of event_ids that already exist in the database from the given list."""
+    if not event_ids:
+        return set()
+    stmt = select(SecurityEvent.event_id).where(SecurityEvent.event_id.in_(event_ids))
+    return set(session.scalars(stmt).all())
 
 
 def get_events_by_ip(
@@ -216,132 +214,117 @@ def delete_old_events(session: Session, days: int) -> int:
     return result.rowcount or 0
 
 
-# =============================================================================
-# User CRUD Operations
-# =============================================================================
-
-def create_user(
+def query_events(
     session: Session,
     *,
-    username: str,
-    email: str,
-    password_hash: str,
-    role: str = "analyst",
-) -> User:
-    """
-    Create a new application user.
-    """
+    limit: int = 100,
+    offset: int = 0,
+    event_type: str | None = None,
+    severity: str | None = None,
+    category: str | None = None,
+    username: str | None = None,
+    source_ip: str | None = None,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+    sort_order: str = "newest",
+) -> list[SecurityEvent]:
+    """Query, filter, and paginate security events."""
+    stmt = select(SecurityEvent)
 
-    user = User(
-        username=username,
-        email=email,
-        password_hash=password_hash,
-        role=role,
-    )
+    if event_type:
+        stmt = stmt.where(SecurityEvent.event_type == event_type)
+    if severity:
+        stmt = stmt.where(SecurityEvent.severity == severity)
+    if category:
+        stmt = stmt.where(SecurityEvent.category == category)
+    if username:
+        stmt = stmt.where(SecurityEvent.username == username)
+    if source_ip:
+        stmt = stmt.where(SecurityEvent.source_ip == source_ip)
+    if start_time:
+        stmt = stmt.where(SecurityEvent.timestamp >= start_time)
+    if end_time:
+        stmt = stmt.where(SecurityEvent.timestamp <= end_time)
 
-    try:
-        session.add(user)
-        session.commit()
-        session.refresh(user)
-        return user
+    if sort_order == "oldest":
+        stmt = stmt.order_by(SecurityEvent.timestamp.asc(), SecurityEvent.id.asc())
+    else:
+        stmt = stmt.order_by(desc(SecurityEvent.timestamp), desc(SecurityEvent.id))
 
-    except Exception:
-        session.rollback()
-        raise
-
-
-def get_user_by_username(
-    session: Session,
-    username: str,
-) -> User | None:
-    """
-    Retrieve a user by username.
-    """
-
-    stmt = (
-        select(User)
-        .where(User.username == username)
-    )
-
-    return session.scalar(stmt)
-
-
-def get_user_by_email(
-    session: Session,
-    email: str,
-) -> User | None:
-    """
-    Retrieve a user by email.
-    """
-
-    stmt = (
-        select(User)
-        .where(User.email == email)
-    )
-
-    return session.scalar(stmt)
-
-
-def get_user_by_id(
-    session: Session,
-    user_id: int,
-) -> User | None:
-    """
-    Retrieve a user by primary key.
-    """
-
-    stmt = (
-        select(User)
-        .where(User.id == user_id)
-    )
-
-    return session.scalar(stmt)
-
-
-def list_users(
-    session: Session,
-) -> list[User]:
-    """
-    Return all users.
-    """
-
-    stmt = (
-        select(User)
-        .order_by(User.username)
-    )
-
+    stmt = stmt.offset(offset).limit(limit)
     return list(session.scalars(stmt).all())
 
 
-def delete_user(
+def delete_events(
     session: Session,
-    user_id: int,
-) -> bool:
-    """
-    Delete a user.
-    """
+    *,
+    event_type: str | None = None,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+    source_ip: str | None = None,
+) -> int:
+    """Delete security events matching specified criteria."""
+    stmt = delete(SecurityEvent)
+    
+    has_criteria = False
+    if event_type:
+        stmt = stmt.where(SecurityEvent.event_type == event_type)
+        has_criteria = True
+    if start_time:
+        stmt = stmt.where(SecurityEvent.timestamp >= start_time)
+        has_criteria = True
+    if end_time:
+        stmt = stmt.where(SecurityEvent.timestamp <= end_time)
+        has_criteria = True
+    if source_ip:
+        stmt = stmt.where(SecurityEvent.source_ip == source_ip)
+        has_criteria = True
 
-    user = get_user_by_id(session, user_id)
+    if not has_criteria:
+        raise ValueError("At least one delete criterion must be provided.")
 
-    if user is None:
-        return False
+    result = session.execute(stmt)
+    return result.rowcount or 0
 
+
+def calculate_event_hash(raw_log: str, timestamp: datetime) -> str:
+    """Generate SHA-256 hash of raw log and timestamp for deduplication."""
+    ts_str = timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp)
+    data = f"{raw_log}_{ts_str}".encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
+def get_existing_event_hashes(session: Session, hashes: list[str]) -> set[str]:
+    """Retrieve the set of event hashes that already exist in the database from the given list."""
+    if not hashes:
+        return set()
     try:
-        session.delete(user)
-        session.commit()
-        return True
-
+        stmt = select(SecurityEvent.hash).where(SecurityEvent.hash.in_(hashes))
+        return set(session.scalars(stmt).all())
     except Exception:
         session.rollback()
-        raise
+        return set()
+
+
+def get_event_by_hash(session: Session, hash_val: str) -> SecurityEvent | None:
+    """Retrieve a security event by its calculated hash."""
+    try:
+        stmt = select(SecurityEvent).where(SecurityEvent.hash == hash_val)
+        return session.scalar(stmt)
+    except Exception:
+        session.rollback()
+        return None
 
 
 def _to_model(event: Mapping[str, Any]) -> SecurityEvent:
     """Convert an event mapping into a SecurityEvent ORM instance."""
     payload = _normalize_payload(event)
+    ts = _parse_timestamp(payload["timestamp"])
+    raw_log = str(payload["raw_log"])
+    h_val = payload.get("hash") or calculate_event_hash(raw_log, ts)
     return SecurityEvent(
         event_id=str(payload["event_id"]),
-        timestamp=_parse_timestamp(payload["timestamp"]),
+        timestamp=ts,
         hostname=str(payload["hostname"]),
         username=payload.get("username"),
         source_ip=payload.get("source_ip"),
@@ -351,7 +334,8 @@ def _to_model(event: Mapping[str, Any]) -> SecurityEvent:
         risk_score=int(payload["risk_score"]),
         process=payload.get("process"),
         message=str(payload["message"]),
-        raw_log=str(payload["raw_log"]),
+        raw_log=raw_log,
+        hash=h_val,
     )
 
 
@@ -392,3 +376,35 @@ def _parse_timestamp(value: str | datetime) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def get_user_by_username(session: Session, username: str) -> User | None:
+    """Retrieve a user by their unique username."""
+    stmt = select(User).where(User.username == username)
+    return session.scalar(stmt)
+
+
+def get_user_by_email(session: Session, email: str) -> User | None:
+    """Retrieve a user by their unique email."""
+    stmt = select(User).where(User.email == email)
+    return session.scalar(stmt)
+
+
+def create_user(
+    session: Session,
+    username: str,
+    email: str,
+    password: str,
+    role: str = "analyst",
+) -> User:
+    """Create and persist a new user."""
+    user = User(
+        username=username,
+        email=email,
+        hashed_password=password,
+        role=role,
+    )
+    session.add(user)
+    session.flush()
+    session.refresh(user)
+    return user

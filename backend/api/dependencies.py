@@ -1,46 +1,24 @@
-"""
-FastAPI dependency providers for CloudSync.
+"""FastAPI dependencies for database sessions and authentication."""
 
-Provides:
-
-- Database session dependency
-- Authenticated user dependency
-- Administrator dependency
-"""
-
-from __future__ import annotations
-
-from collections.abc import Generator
-
+from typing import Generator
 from fastapi import Depends
 from fastapi.security import OAuth2PasswordBearer
-from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError
 from sqlalchemy.orm import Session
 
-from backend.core.config import get_settings
-from backend.core.exceptions import (
-    AuthenticationError,
-    AuthorizationError,
-)
+from backend.core.exceptions import AuthenticationError, AuthorizationError
 from backend.core.security import decode_access_token
 from backend.database.connection import get_session
 from backend.database.crud import get_user_by_username
 from backend.database.models import User
 
-settings = get_settings()
-
-oauth2_scheme = OAuth2PasswordBearer(
-    tokenUrl=f"{settings.API_PREFIX}/auth/token"
-)
+# OAuth2 scheme for extracting bearer tokens
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/token")
 
 
 def get_db() -> Generator[Session, None, None]:
-    """
-    Provide a database session for each request.
-    """
+    """Dependency to provide a thread-safe database session."""
     db = get_session()
-
     try:
         yield db
     finally:
@@ -49,48 +27,29 @@ def get_db() -> Generator[Session, None, None]:
 
 def get_current_user(
     token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db)
 ) -> User:
-    """
-    Return the authenticated user associated with the JWT.
-    """
+    """Dependency to authenticate the current user using JWT."""
     try:
         payload = decode_access_token(token)
+        username: str | None = payload.get("sub")
+        if not username:
+            raise AuthenticationError("Could not validate credentials, subject missing.")
+    except JWTError as e:
+        raise AuthenticationError(f"Could not validate credentials: {str(e)}")
 
-        username = payload.get("sub")
-
-        if username is None:
-            raise AuthenticationError(
-                "Invalid authentication credentials."
-            )
-
-    except JWTError:
-        raise AuthenticationError(
-            "Invalid or expired access token."
-        )
-
-    user = get_user_by_username(
-        db,
-        username=username,
-    )
-
-    if user is None:
-        raise AuthenticationError(
-            "User not found."
-        )
-
+    user = get_user_by_username(db, username=username)
+    if not user:
+        raise AuthenticationError("User not found.")
+        
     return user
 
 
 def get_current_admin(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ) -> User:
-    """
-    Ensure the authenticated user has administrator privileges.
-    """
-    if current_user.role != "admin":
-        raise AuthorizationError(
-            "Administrator privileges required."
-        )
-
+    """Dependency to ensure the current authenticated user has administrative privileges."""
+    if getattr(current_user, "role", None) != "admin":
+        raise AuthorizationError("Administrative privileges required.")
+        
     return current_user

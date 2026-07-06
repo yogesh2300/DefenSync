@@ -1,202 +1,45 @@
-"""SQLAlchemy ORM models for CloudSync."""
-
-from __future__ import annotations
+"""SQLAlchemy database models for CloudSync."""
 
 from datetime import datetime, timezone
+import uuid
+from sqlalchemy import Column, String, Integer, DateTime, Text, Index
+from sqlalchemy.orm import declarative_base
 
-from sqlalchemy import Boolean, DateTime, Index, Integer, String, Text, func
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
-
-class Base(DeclarativeBase):
-    """Declarative base for all CloudSync ORM models."""
-
-
-# =============================================================================
-# Security Events
-# =============================================================================
-
-
-class SecurityEvent(Base):
-    """Persisted security event from the CloudSync pipeline."""
-
-    __tablename__ = "security_events"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-
-    event_id: Mapped[str] = mapped_column(
-        String(36),
-        unique=True,
-        nullable=False,
-        index=True,
-    )
-
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        index=True,
-    )
-
-    hostname: Mapped[str] = mapped_column(
-        String(255),
-        nullable=False,
-        index=True,
-    )
-
-    username: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
-        index=True,
-    )
-
-    source_ip: Mapped[str | None] = mapped_column(
-        String(45),
-        nullable=True,
-        index=True,
-    )
-
-    event_type: Mapped[str] = mapped_column(
-        String(64),
-        nullable=False,
-        index=True,
-    )
-
-    category: Mapped[str] = mapped_column(
-        String(32),
-        nullable=False,
-        index=True,
-    )
-
-    severity: Mapped[str] = mapped_column(
-        String(16),
-        nullable=False,
-        index=True,
-    )
-
-    risk_score: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-        index=True,
-    )
-
-    process: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
-    )
-
-    message: Mapped[str] = mapped_column(
-        Text,
-        nullable=False,
-    )
-
-    raw_log: Mapped[str] = mapped_column(
-        Text,
-        nullable=False,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        default=lambda: datetime.now(timezone.utc),
-    )
-
-    __table_args__ = (
-        Index(
-            "ix_security_events_risk_score_timestamp",
-            "risk_score",
-            "timestamp",
-        ),
-        Index(
-            "ix_security_events_username_timestamp",
-            "username",
-            "timestamp",
-        ),
-        Index(
-            "ix_security_events_type_timestamp",
-            "event_type",
-            "timestamp",
-        ),
-    )
-
-    def __repr__(self) -> str:
-        return (
-            f"SecurityEvent("
-            f"id={self.id!r}, "
-            f"event_id={self.event_id!r}, "
-            f"event_type={self.event_type!r}, "
-            f"risk_score={self.risk_score!r})"
-        )
-
-
-# =============================================================================
-# Users
-# =============================================================================
+Base = declarative_base()
 
 
 class User(Base):
-    """Application user used for authentication and authorization."""
-
+    """Database model for registered system accounts."""
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(
-        Integer,
-        primary_key=True,
-        autoincrement=True,
-    )
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    username = Column(String(50), unique=True, nullable=False, index=True)
+    email = Column(String(100), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    role = Column(String(20), nullable=False, default="analyst")  # admin, analyst, viewer
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
-    username: Mapped[str] = mapped_column(
-        String(50),
-        unique=True,
-        nullable=False,
-        index=True,
-    )
 
-    email: Mapped[str] = mapped_column(
-        String(255),
-        unique=True,
-        nullable=False,
-        index=True,
-    )
+class SecurityEvent(Base):
+    """Database model for normalized security logs."""
+    __tablename__ = "security_events"
 
-    password_hash: Mapped[str] = mapped_column(
-        String(255),
-        nullable=False,
-    )
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    event_id = Column(String(36), unique=True, nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    hostname = Column(String(100), nullable=False)
+    username = Column(String(100), nullable=True)
+    source_ip = Column(String(45), nullable=True, index=True)
+    event_type = Column(String(50), nullable=False, index=True)
+    category = Column(String(50), nullable=False)
+    severity = Column(String(20), nullable=False, index=True)
+    risk_score = Column(Integer, nullable=False, index=True)
+    process = Column(String(50), nullable=True)
+    message = Column(Text, nullable=False)
+    raw_log = Column(Text, nullable=False)
+    hash = Column(String(64), unique=True, nullable=False, index=True)
 
-    role: Mapped[str] = mapped_column(
-        String(20),
-        nullable=False,
-        default="analyst",
-        index=True,
-    )
 
-    is_active: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=True,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        default=lambda: datetime.now(timezone.utc),
-    )
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
-
-    def __repr__(self) -> str:
-        return (
-            f"User("
-            f"id={self.id!r}, "
-            f"username={self.username!r}, "
-            f"role={self.role!r}, "
-            f"is_active={self.is_active!r})"
-        )
+# Compound indexes for fast telemetry queries
+Index("ix_events_user_time", SecurityEvent.username, SecurityEvent.timestamp)
+Index("ix_events_severity_time", SecurityEvent.severity, SecurityEvent.timestamp)
