@@ -47,13 +47,18 @@ export async function getHealth() {
   return data
 }
 
-export async function getDashboardSummary() {
-  const { data } = await api.get('/api/v1/dashboard')
+function withServerId(params = {}, serverId = null) {
+  if (serverId) return { ...params, server_id: serverId }
+  return params
+}
+
+export async function getDashboardSummary(serverId = null) {
+  const { data } = await api.get('/api/v1/dashboard', { params: withServerId({}, serverId) })
   return data
 }
 
-export async function getEventStats() {
-  const { data } = await api.get('/api/v1/events/stats')
+export async function getEventStats(serverId = null) {
+  const { data } = await api.get('/api/v1/events/stats', { params: withServerId({}, serverId) })
   return data
 }
 
@@ -69,8 +74,8 @@ export async function getHighRiskEvents(limit = 20, serverId = null) {
   return data
 }
 
-export async function getRecentEvents(limit = 10) {
-  const { data } = await api.get('/api/v1/events/recent', { params: { limit } })
+export async function getRecentEvents(limit = 10, serverId = null) {
+  const { data } = await api.get('/api/v1/events/recent', { params: withServerId({ limit }, serverId) })
   return data
 }
 
@@ -79,8 +84,8 @@ export async function getAlerts(params = {}) {
   return data
 }
 
-export async function getAlertSummary() {
-  const { data } = await api.get('/api/v1/alerts/summary')
+export async function getAlertSummary(serverId = null) {
+  const { data } = await api.get('/api/v1/alerts/summary', { params: withServerId({}, serverId) })
   return data
 }
 
@@ -89,23 +94,18 @@ export async function acknowledgeAlert(alertId) {
   return data
 }
 
-export async function getDetectionStatus() {
-  const { data } = await api.get('/api/v1/detection/status')
+export async function getDetectionStatus(serverId = null) {
+  const { data } = await api.get('/api/v1/detection/status', { params: withServerId({}, serverId) })
   return data
 }
 
-export async function runDetection() {
-  const { data } = await api.post('/api/v1/detection/run')
+export async function runDetection(serverId = null) {
+  const { data } = await api.post('/api/v1/detection/run', null, { params: withServerId({}, serverId) })
   return data
 }
 
 export async function getAnomalies(limit = 20, serverId = null) {
-  const params = { limit }
-  if (serverId) {
-    const { data } = await api.get(`/api/v1/servers/${serverId}/predictions`, { params })
-    return data
-  }
-  const { data } = await api.get('/api/v1/detection/anomalies', { params })
+  const { data } = await api.get('/api/v1/detection/anomalies', { params: withServerId({ limit }, serverId) })
   return data
 }
 
@@ -180,6 +180,12 @@ export async function getLogSources() {
 export function logout() {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(LEGACY_TOKEN_KEY)
+  try {
+    sessionStorage.clear()
+  } catch {
+    // ignore storage errors in restricted environments
+  }
+  window.dispatchEvent(new CustomEvent('defensync:logout'))
 }
 
 export default api

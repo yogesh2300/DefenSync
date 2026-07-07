@@ -7,6 +7,8 @@ import {
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { useAuth } from '../context/AuthContext'
+import { useSelectedServer } from '../context/SelectedServerContext'
+import { Select } from './ui/Input'
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -42,6 +44,7 @@ function NavItem({ to, label, icon: Icon, end, collapsed, onClick }) {
 
 export default function Layout() {
   const { user, logout, isAdmin } = useAuth()
+  const { servers, selectedServerId, setSelectedServerId, loading: serversLoading } = useSelectedServer()
   const navigate = useNavigate()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
@@ -139,6 +142,30 @@ export default function Layout() {
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
+              <Select
+                value={selectedServerId}
+                onChange={(event) => setSelectedServerId(event.target.value)}
+                className="hidden w-44 sm:block"
+                disabled={serversLoading}
+                aria-label="Filter by server"
+              >
+                <option value="">All Servers</option>
+                {servers.map((server) => (
+                  <option key={server.id} value={server.id}>{server.server_name}</option>
+                ))}
+              </Select>
+              <Select
+                value={selectedServerId}
+                onChange={(event) => setSelectedServerId(event.target.value)}
+                className="w-36 sm:hidden"
+                disabled={serversLoading}
+                aria-label="Filter by server"
+              >
+                <option value="">All</option>
+                {servers.map((server) => (
+                  <option key={server.id} value={server.id}>{server.server_name}</option>
+                ))}
+              </Select>
               <div className="hidden items-center gap-2 rounded-full bg-[#D8ECE6] px-3 py-2 text-xs font-semibold text-[#111111] md:flex">
                 <Activity className="h-4 w-4" />
                 Server status

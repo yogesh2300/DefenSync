@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Copy, Filter, ListTree, Search } from 'lucide-react'
-import { getEvents, getServers } from '../api/client'
+import { getEvents } from '../api/client'
+import { useSelectedServer } from '../context/SelectedServerContext'
 import AlertBanner from '../components/ui/AlertBanner'
 import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
@@ -10,16 +11,15 @@ import { SeverityBadge } from '../components/ui/Badge'
 import { Input, Select } from '../components/ui/Input'
 
 export default function Events() {
+  const { selectedServerId, servers, isAllServers } = useSelectedServer()
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [severity, setSeverity] = useState('')
   const [eventType, setEventType] = useState('')
-  const [serverId, setServerId] = useState('')
   const [username, setUsername] = useState('')
   const [startTime, setStartTime] = useState('')
   const [endTime, setEndTime] = useState('')
-  const [servers, setServers] = useState([])
   const [error, setError] = useState('')
   const [selectedId, setSelectedId] = useState(null)
 
@@ -31,7 +31,7 @@ export default function Events() {
       if (search) params.search = search
       if (severity) params.severity = severity
       if (eventType) params.event_type = eventType
-      if (serverId) params.server_id = serverId
+      if (selectedServerId) params.server_id = selectedServerId
       if (username) params.username = username
       if (startTime) params.start_time = new Date(startTime).toISOString()
       if (endTime) params.end_time = new Date(endTime).toISOString()
@@ -45,15 +45,18 @@ export default function Events() {
     } finally {
       setLoading(false)
     }
-  }, [search, severity, eventType, serverId, username, startTime, endTime])
+  }, [search, severity, eventType, selectedServerId, username, startTime, endTime])
 
   useEffect(() => {
     load()
-    window.addEventListener('defensync:data-refresh', load)
-    return () => window.removeEventListener('defensync:data-refresh', load)
+    const onRefresh = () => load()
+    window.addEventListener('defensync:data-refresh', onRefresh)
+    window.addEventListener('defensync:server-changed', onRefresh)
+    return () => {
+      window.removeEventListener('defensync:data-refresh', onRefresh)
+      window.removeEventListener('defensync:server-changed', onRefresh)
+    }
   }, [load])
-
-  useEffect(() => { getServers().then(setServers).catch(() => setServers([])) }, [])
 
   const selectedEvent = useMemo(
     () => events.find((event) => (event.event_id || event.id) === selectedId) || events[0],
@@ -75,7 +78,7 @@ export default function Events() {
     <div className="page-shell page-fill flex flex-col">
       <PageHeader
         title="Event Explorer"
-        subtitle={`Security Monitoring - ${events.length} events`}
+        subtitle={`Security Monitoring - ${events.length} events${isAllServers ? '' : ` - ${servers.find((s) => s.id === selectedServerId)?.server_name || 'filtered'}`}`}
         actions={<Button variant="secondary" onClick={load}>Refresh</Button>}
       />
 
@@ -85,10 +88,14 @@ export default function Events() {
         <Card title="Filters" subtitle="Refine the stream" className="h-full lg:max-h-[calc(100vh-9.5rem)] lg:overflow-y-auto">
           <div className="space-y-4">
             <Input label="Search" placeholder="Message, IP, host..." value={search} onChange={(e) => setSearch(e.target.value)} />
-            <Select label="Server" value={serverId} onChange={(e) => setServerId(e.target.value)}>
-              <option value="">All servers</option>
-              {servers.map((server) => <option key={server.id} value={server.id}>{server.server_name}</option>)}
-            </Select>
+            {!isAllServers && (
+              <div className="rounded-2xl border border-[var(--panel-border)] bg-[var(--panel-strong)] p-3 text-sm">
+                <p className="text-xs muted-text">Server scope</p>
+                <p className="mt-1 font-medium cyber-text">
+                  {servers.find((server) => server.id === selectedServerId)?.server_name || 'Selected server'}
+                </p>
+              </div>
+            )}
             <Select label="Severity" value={severity} onChange={(e) => setSeverity(e.target.value)}>
               <option value="">All severities</option>
               {['critical', 'high', 'medium', 'low', 'info'].map((item) => <option key={item} value={item}>{item}</option>)}

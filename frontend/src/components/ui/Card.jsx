@@ -1,4 +1,8 @@
 export default function Card({ children, className = '', title, subtitle, action, padding = true }) {
+  const bodyClass = padding
+    ? 'relative'
+    : 'relative flex min-h-0 flex-1 flex-col overflow-hidden'
+
   return (
     <section className={`cyber-card ${padding ? 'p-5' : ''} ${className}`}>
       {(title || action) && (
@@ -10,7 +14,7 @@ export default function Card({ children, className = '', title, subtitle, action
           {action}
         </div>
       )}
-      <div className="relative">{children}</div>
+      <div className={bodyClass}>{children}</div>
     </section>
   )
 }

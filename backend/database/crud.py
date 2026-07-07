@@ -37,7 +37,13 @@ def insert_many(session: Session, events: Iterable[Mapping[str, Any]]) -> list[S
     return records
 
 
-def get_recent_events(session: Session, *, limit: int = 100, owner_id: str | None = None) -> list[SecurityEvent]:
+def get_recent_events(
+    session: Session,
+    *,
+    limit: int = 100,
+    owner_id: str | None = None,
+    server_id: str | None = None,
+) -> list[SecurityEvent]:
     """Return the most recent events ordered by event timestamp."""
     stmt = (
         select(SecurityEvent)
@@ -46,6 +52,8 @@ def get_recent_events(session: Session, *, limit: int = 100, owner_id: str | Non
     )
     if owner_id:
         stmt = stmt.where(SecurityEvent.owner_id == owner_id)
+    if server_id:
+        stmt = stmt.where(SecurityEvent.server_id == server_id)
     return list(session.scalars(stmt).all())
 
 
@@ -55,6 +63,7 @@ def get_high_risk_events(
     min_score: int = 70,
     limit: int = 100,
     owner_id: str | None = None,
+    server_id: str | None = None,
 ) -> list[SecurityEvent]:
     """Return events at or above the configured risk score threshold."""
     stmt = (
@@ -65,6 +74,8 @@ def get_high_risk_events(
     )
     if owner_id:
         stmt = stmt.where(SecurityEvent.owner_id == owner_id)
+    if server_id:
+        stmt = stmt.where(SecurityEvent.server_id == server_id)
     return list(session.scalars(stmt).all())
 
 
@@ -210,7 +221,12 @@ def count_unique_ips(session: Session, *, owner_id: str | None = None) -> int:
     return session.scalar(stmt) or 0
 
 
-def dashboard_summary(session: Session, *, owner_id: str | None = None) -> dict[str, int]:
+def dashboard_summary(
+    session: Session,
+    *,
+    owner_id: str | None = None,
+    server_id: str | None = None,
+) -> dict[str, int]:
     """Return summary statistics for the dashboard."""
     stmt = select(
         func.count(SecurityEvent.id),
@@ -223,6 +239,8 @@ def dashboard_summary(session: Session, *, owner_id: str | None = None) -> dict[
     )
     if owner_id:
         stmt = stmt.where(SecurityEvent.owner_id == owner_id)
+    if server_id:
+        stmt = stmt.where(SecurityEvent.server_id == server_id)
     row = session.execute(stmt).one()
     avg_risk = row[6] or 0
     return {

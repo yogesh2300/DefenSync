@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from backend.api.dependencies import get_db, get_current_user, get_current_admin
+from backend.api.dependencies import get_db, get_current_user, get_current_admin, resolve_owner_id, validate_server_scope
 from backend.database.models import User
 from backend.services.event_service import EventService
 from backend.services.analytics_service import AnalyticsService
@@ -148,11 +148,13 @@ def query_events(
     end_time: datetime | None = Query(None, description="Filter events before this UTC timestamp"),
     sort_order: Literal["newest", "oldest"] = Query("newest", description="Sorting by timestamp"),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
     service: EventService = Depends(get_event_service),
 ) -> Any:
     """Query, filter, and paginate security events."""
-    logger.info("API request by %s: GET /events", current_user.username)
-    owner_id = None if current_user.role.upper() == "ADMIN" else current_user.id
+    logger.info("API request by %s: GET /events server_id=%s", current_user.username, server_id)
+    owner_id = resolve_owner_id(current_user)
+    scoped_server_id = validate_server_scope(server_id, current_user, db)
     return service.query_events(
         limit=limit,
         offset=offset,
@@ -162,7 +164,7 @@ def query_events(
         username=username,
         source_ip=source_ip,
         hostname=hostname,
-        server_id=server_id,
+        server_id=scoped_server_id,
         owner_id=owner_id,
         search=search,
         start_time=start_time,
@@ -173,38 +175,57 @@ def query_events(
 
 @router.get("/stats", status_code=status.HTTP_200_OK, summary="Get Security Analytics and Statistics")
 def get_event_stats(
+    server_id: str | None = Query(None, description="Filter analytics to one server"),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
     analytics_service: AnalyticsService = Depends(get_analytics_service),
 ) -> Any:
     """Retrieve aggregated SIEM metrics, severity distributions, attacker IP ranks, and hourly trends."""
-    logger.info("API request by %s: GET /events/stats", current_user.username)
-    owner_id = None if current_user.role.upper() == "ADMIN" else current_user.id
-    return analytics_service.get_event_stats(owner_id=owner_id)
+    logger.info("API request by %s: GET /events/stats server_id=%s", current_user.username, server_id)
+    owner_id = resolve_owner_id(current_user)
+    scoped_server_id = validate_server_scope(server_id, current_user, db)
+    return analytics_service.get_event_stats(owner_id=owner_id, server_id=scoped_server_id)
 
 
 @router.get("/recent", response_model=list[SecurityEventResponse], status_code=status.HTTP_200_OK, summary="List Recent Events")
 def get_recent_events(
     limit: int = Query(20, ge=1, le=1000, description="Number of recent events to return"),
+    server_id: str | None = Query(None, description="Filter recent events to one server"),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
     service: EventService = Depends(get_event_service),
 ) -> Any:
     """Retrieve the absolute latest security events, optimized for live SIEM dashboards."""
-    logger.info("API request by %s: GET /events/recent (limit=%d)", current_user.username, limit)
-    owner_id = None if current_user.role.upper() == "ADMIN" else current_user.id
-    return service.get_recent_events(limit=limit, owner_id=owner_id)
+    logger.info("API request by %s: GET /events/recent (limit=%d, server_id=%s)", current_user.username, limit, server_id)
+    owner_id = resolve_owner_id(current_user)
+    scoped_server_id = validate_server_scope(server_id, current_user, db)
+    return service.get_recent_events(limit=limit, owner_id=owner_id, server_id=scoped_server_id)
 
 
 @router.get("/high-risk", response_model=list[SecurityEventResponse], status_code=status.HTTP_200_OK, summary="List High-Risk Events")
 def get_high_risk_events(
     min_score: int = Query(70, ge=0, le=100, description="Minimum risk score threshold"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of events to return"),
+    server_id: str | None = Query(None, description="Filter high-risk events to one server"),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
     service: EventService = Depends(get_event_service),
 ) -> Any:
     """Retrieve high-risk security events meeting or exceeding risk score (>= 70), sorted descending."""
-    logger.info("API request by %s: GET /events/high-risk (min_score=%d)", current_user.username, min_score)
-    owner_id = None if current_user.role.upper() == "ADMIN" else current_user.id
-    return service.get_high_risk_events(min_score=min_score, limit=limit, owner_id=owner_id)
+    logger.info(
+        "API request by %s: GET /events/high-risk (min_score=%d, server_id=%s)",
+        current_user.username,
+        min_score,
+        server_id,
+    )
+    owner_id = resolve_owner_id(current_user)
+    scoped_server_id = validate_server_scope(server_id, current_user, db)
+    return service.get_high_risk_events(
+        min_score=min_score,
+        limit=limit,
+        owner_id=owner_id,
+        server_id=scoped_server_id,
+    )
 
 
 @router.post("", response_model=IngestionResponse, status_code=status.HTTP_201_CREATED, summary="Ingest a Single Event")
@@ -236,7 +257,7 @@ def ingest_bulk_events(
     payloads = []
     for item in events_data:
         payload = dict(item)
-        payload.setdefault("owner_id", current_user.id)
+        payload["owner_id"] = current_user.id
         payloads.append(payload)
     stats = ingestion_service.ingest_bulk_events(payloads)
     return BulkIngestionResponse(

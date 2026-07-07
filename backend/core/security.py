@@ -14,19 +14,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from backend.core.config import get_settings
-
-# ==============================================================================
-# Password Hashing Configuration
-# ==============================================================================
-
-PASSWORD_CONTEXT = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto",
-)
 
 
 # ==============================================================================
@@ -34,33 +25,21 @@ PASSWORD_CONTEXT = CryptContext(
 # ==============================================================================
 
 def hash_password(password: str) -> str:
-    """
-    Hash a plaintext password using bcrypt.
-
-    Args:
-        password: Plaintext password.
-
-    Returns:
-        Secure bcrypt hash.
-    """
-    return PASSWORD_CONTEXT.hash(password)
+    """Hash a plaintext password using bcrypt."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """
-    Verify a plaintext password against its bcrypt hash.
-
-    Args:
-        plain_password: User supplied password.
-        hashed_password: Stored bcrypt hash.
-
-    Returns:
-        True if password matches.
-    """
-    return PASSWORD_CONTEXT.verify(
-        plain_password,
-        hashed_password,
-    )
+    """Verify a plaintext password against its bcrypt hash."""
+    if not hashed_password:
+        return False
+    try:
+        return bcrypt.checkpw(
+            plain_password.encode("utf-8"),
+            hashed_password.encode("utf-8"),
+        )
+    except (ValueError, TypeError):
+        return False
 
 
 # ==============================================================================

@@ -20,25 +20,30 @@ class AnalyticsService:
         """Initialize the AnalyticsService with a database session."""
         self._session = session
 
-    def get_event_stats(self, *, owner_id: str | None = None) -> dict[str, Any]:
+    def get_event_stats(
+        self,
+        *,
+        owner_id: str | None = None,
+        server_id: str | None = None,
+    ) -> dict[str, Any]:
         """Aggregate security event statistics for SIEM dashboards."""
-        logger.info("Calculating security event statistics")
+        logger.info("Calculating security event statistics server_id=%s", server_id)
         scoped_owner_id = owner_id
 
         # 1. Total events
         total_stmt = select(func.count(SecurityEvent.id))
         if scoped_owner_id:
             total_stmt = total_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
+        if server_id:
+            total_stmt = total_stmt.where(SecurityEvent.server_id == server_id)
         total_events = self._session.scalar(total_stmt) or 0
-        if scoped_owner_id and total_events == 0:
-            logger.warning("No owner-scoped analytics events found for owner_id=%s; falling back to global read", scoped_owner_id)
-            scoped_owner_id = None
-            total_events = self._session.scalar(select(func.count(SecurityEvent.id))) or 0
 
         # 2. Count by severity
         severity_stmt = select(SecurityEvent.severity, func.count(SecurityEvent.id)).group_by(SecurityEvent.severity)
         if scoped_owner_id:
             severity_stmt = severity_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
+        if server_id:
+            severity_stmt = severity_stmt.where(SecurityEvent.server_id == server_id)
         severity_rows = self._session.execute(severity_stmt).all()
         severity_counts = {row[0]: row[1] for row in severity_rows}
 
@@ -46,6 +51,8 @@ class AnalyticsService:
         type_stmt = select(SecurityEvent.event_type, func.count(SecurityEvent.id)).group_by(SecurityEvent.event_type)
         if scoped_owner_id:
             type_stmt = type_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
+        if server_id:
+            type_stmt = type_stmt.where(SecurityEvent.server_id == server_id)
         type_rows = self._session.execute(type_stmt).all()
         type_counts = {row[0]: row[1] for row in type_rows}
 
@@ -59,6 +66,8 @@ class AnalyticsService:
         )
         if scoped_owner_id:
             top_ips_stmt = top_ips_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
+        if server_id:
+            top_ips_stmt = top_ips_stmt.where(SecurityEvent.server_id == server_id)
         top_ips_rows = self._session.execute(top_ips_stmt).all()
         top_source_ips = {row[0]: row[1] for row in top_ips_rows}
 
@@ -72,6 +81,8 @@ class AnalyticsService:
         )
         if scoped_owner_id:
             top_users_stmt = top_users_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
+        if server_id:
+            top_users_stmt = top_users_stmt.where(SecurityEvent.server_id == server_id)
         top_users_rows = self._session.execute(top_users_stmt).all()
         top_usernames = {row[0]: row[1] for row in top_users_rows}
 
@@ -91,6 +102,8 @@ class AnalyticsService:
             )
             if scoped_owner_id:
                 hourly_stmt = hourly_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
+            if server_id:
+                hourly_stmt = hourly_stmt.where(SecurityEvent.server_id == server_id)
             hourly_rows = self._session.execute(hourly_stmt).all()
             for row in hourly_rows:
                 hour_dt = row[0]
@@ -107,6 +120,8 @@ class AnalyticsService:
             all_events_stmt = select(SecurityEvent.timestamp).where(SecurityEvent.timestamp >= cutoff)
             if scoped_owner_id:
                 all_events_stmt = all_events_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
+            if server_id:
+                all_events_stmt = all_events_stmt.where(SecurityEvent.server_id == server_id)
             events_ts = self._session.scalars(all_events_stmt).all()
             
             buckets: dict[str, int] = {}

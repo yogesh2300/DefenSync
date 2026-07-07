@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend.api.dependencies import get_current_user, get_db
+from backend.api.dependencies import get_current_user, get_db, resolve_owner_id, validate_server_scope
 from backend.core.exceptions import ValidationException
 from backend.core.logging import get_logger
 from backend.database.models import User
@@ -51,21 +51,32 @@ def get_alert_service(db: Session = Depends(get_db)) -> AlertService:
 def list_alerts(
     limit: int = Query(50, ge=1, le=500),
     acknowledged: bool | None = Query(None),
+    server_id: str | None = Query(None, description="Filter alerts to one server"),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
     service: AlertService = Depends(get_alert_service),
 ) -> Any:
-    logger.info("API request by %s: GET /alerts", current_user.username)
-    owner_id = None if current_user.role.upper() == "ADMIN" else current_user.id
-    return service.list_alerts(limit=limit, acknowledged=acknowledged, owner_id=owner_id)
+    logger.info("API request by %s: GET /alerts server_id=%s", current_user.username, server_id)
+    owner_id = resolve_owner_id(current_user)
+    scoped_server_id = validate_server_scope(server_id, current_user, db)
+    return service.list_alerts(
+        limit=limit,
+        acknowledged=acknowledged,
+        owner_id=owner_id,
+        server_id=scoped_server_id,
+    )
 
 
 @router.get("/summary", response_model=AlertSummaryResponse, summary="Alert summary counts")
 def alert_summary(
+    server_id: str | None = Query(None, description="Filter alert summary to one server"),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
     service: AlertService = Depends(get_alert_service),
 ) -> Any:
-    owner_id = None if current_user.role.upper() == "ADMIN" else current_user.id
-    return service.summary(owner_id=owner_id)
+    owner_id = resolve_owner_id(current_user)
+    scoped_server_id = validate_server_scope(server_id, current_user, db)
+    return service.summary(owner_id=owner_id, server_id=scoped_server_id)
 
 
 @router.post("/{alert_id}/ack", response_model=AlertResponse, summary="Acknowledge alert")
@@ -76,7 +87,7 @@ def acknowledge_alert(
 ) -> Any:
     logger.info("API request by %s: POST /alerts/%s/ack", current_user.username, alert_id)
     try:
-        owner_id = None if current_user.role.upper() == "ADMIN" else current_user.id
+        owner_id = resolve_owner_id(current_user)
         return service.acknowledge(alert_id, owner_id=owner_id)
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc

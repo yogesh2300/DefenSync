@@ -87,6 +87,7 @@ class AlertService:
         limit: int = 50,
         acknowledged: bool | None = None,
         owner_id: str | None = None,
+        server_id: str | None = None,
     ) -> list[Alert]:
         """Return alerts newest first."""
         stmt = select(Alert).order_by(desc(Alert.created_at)).limit(limit)
@@ -94,11 +95,9 @@ class AlertService:
             stmt = stmt.where(Alert.acknowledged == acknowledged)
         if owner_id:
             stmt = stmt.where(Alert.owner_id == owner_id)
-        rows = list(self._session.scalars(stmt).all())
-        if owner_id and not rows:
-            logger.warning("No owner-scoped alerts found for owner_id=%s; falling back to global alert read", owner_id)
-            return self.list_alerts(limit=limit, acknowledged=acknowledged, owner_id=None)
-        return rows
+        if server_id:
+            stmt = stmt.where(Alert.server_id == server_id)
+        return list(self._session.scalars(stmt).all())
 
     def acknowledge(self, alert_id: str, *, owner_id: str | None = None) -> Alert:
         """Mark an alert as acknowledged."""
@@ -111,7 +110,12 @@ class AlertService:
         self._session.commit()
         return alert
 
-    def summary(self, *, owner_id: str | None = None) -> dict[str, Any]:
+    def summary(
+        self,
+        *,
+        owner_id: str | None = None,
+        server_id: str | None = None,
+    ) -> dict[str, Any]:
         """Return alert counts for dashboard widgets."""
         stmt = select(
             func.count(Alert.id),
@@ -122,10 +126,9 @@ class AlertService:
         )
         if owner_id:
             stmt = stmt.where(Alert.owner_id == owner_id)
+        if server_id:
+            stmt = stmt.where(Alert.server_id == server_id)
         row = self._session.execute(stmt).one()
-        if owner_id and int(row[0] or 0) == 0:
-            logger.warning("No owner-scoped alert summary found for owner_id=%s; falling back to global alert summary", owner_id)
-            return self.summary(owner_id=None)
         return {
             "total": int(row[0] or 0),
             "unacknowledged": int(row[1] or 0),

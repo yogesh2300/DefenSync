@@ -1,8 +1,8 @@
-import { useState } from 'react'
-import { Navigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Navigate, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Eye, EyeOff, Fingerprint, ShieldCheck } from 'lucide-react'
-import { register } from '../api/client'
+import { getServers, register } from '../api/client'
 import AlertBanner from '../components/ui/AlertBanner'
 import Button from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
@@ -10,6 +10,7 @@ import { useAuth } from '../context/AuthContext'
 
 export default function Login() {
   const { user, login } = useAuth()
+  const navigate = useNavigate()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [email, setEmail] = useState('')
@@ -17,8 +18,26 @@ export default function Login() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
+  const [redirectTo, setRedirectTo] = useState(null)
 
-  if (user) return <Navigate to="/" replace />
+  useEffect(() => {
+    if (!user) return
+    let cancelled = false
+    getServers()
+      .then((servers) => {
+        if (cancelled) return
+        setRedirectTo(Array.isArray(servers) && servers.length > 0 ? '/' : '/servers/new')
+      })
+      .catch(() => {
+        if (cancelled) return
+        setRedirectTo('/servers/new')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [user])
+
+  if (redirectTo) return <Navigate to={redirectTo} replace />
 
   const handleSubmit = async (event) => {
     event.preventDefault()
@@ -31,6 +50,8 @@ export default function Login() {
       } else {
         await login(username, password)
       }
+      const servers = await getServers()
+      navigate(Array.isArray(servers) && servers.length > 0 ? '/' : '/servers/new', { replace: true })
     } catch (err) {
       setError(err.response?.data?.detail || err.response?.data?.error || err.message || 'Authentication failed')
     } finally {

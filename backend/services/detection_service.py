@@ -34,9 +34,6 @@ class DetectionService:
         if owner_id:
             stmt = stmt.where(SecurityEvent.owner_id == owner_id)
         events = list(reversed(self._session.scalars(stmt).all()))
-        if owner_id and not events:
-            logger.warning("No owner-scoped detection events found for owner_id=%s; falling back to global read", owner_id)
-            return self._load_events(limit=limit, server_id=server_id, owner_id=None)
         return events
 
     @staticmethod
@@ -86,13 +83,15 @@ class DetectionService:
             dtype=int,
         )
 
-    def run_detection(self, *, owner_id: str | None = None) -> dict[str, Any]:
+    def run_detection(
+        self,
+        *,
+        owner_id: str | None = None,
+        server_id: str | None = None,
+    ) -> dict[str, Any]:
         """Run hybrid detection pipeline and sync alerts."""
-        events = self._load_events(owner_id=owner_id)
-        effective_owner_id = owner_id
-        if owner_id and events and not any(getattr(event, "owner_id", None) == owner_id for event in events):
-            effective_owner_id = None
-        rule_created = self._alert_service.sync_from_events(owner_id=effective_owner_id)
+        events = self._load_events(owner_id=owner_id, server_id=server_id)
+        rule_created = self._alert_service.sync_from_events(owner_id=owner_id)
 
         if len(events) < 10:
             return {
@@ -173,9 +172,17 @@ class DetectionService:
                 ml_count += 1
 
         delete_stmt = delete(MLPrediction)
-        if effective_owner_id:
-            delete_stmt = delete_stmt.where(MLPrediction.owner_id == effective_owner_id)
-        self._session.execute(delete_stmt)
+        if owner_id:
+            delete_stmt = delete_stmt.where(MLPrediction.owner_id == owner_id)
+        if server_id:
+            delete_stmt = delete_stmt.where(MLPrediction.server_id == server_id)
+        elif events:
+            event_ids = [event.event_id for event in events]
+            delete_stmt = delete_stmt.where(MLPrediction.event_id.in_(event_ids))
+        else:
+            delete_stmt = None
+        if delete_stmt is not None:
+            self._session.execute(delete_stmt)
         self._session.add_all(prediction_rows)
         self._session.commit()
 
@@ -198,11 +205,6 @@ class DetectionService:
         stored = self._stored_anomalies(limit=limit, server_id=server_id, owner_id=owner_id)
         if stored:
             return stored
-        if owner_id:
-            stored = self._stored_anomalies(limit=limit, server_id=server_id, owner_id=None)
-            if stored:
-                logger.warning("No owner-scoped detections found for owner_id=%s; falling back to global detections", owner_id)
-                return stored
 
         events = self._load_events(limit=max(limit * 5, 50), server_id=server_id, owner_id=owner_id)
         if len(events) < 5:
@@ -279,20 +281,22 @@ class DetectionService:
             "classification": "Malicious" if event.risk_score >= 85 else "Suspicious" if event.risk_score >= 70 else "Normal",
         }
 
-    def status(self, *, owner_id: str | None = None) -> dict[str, Any]:
+    def status(
+        self,
+        *,
+        owner_id: str | None = None,
+        server_id: str | None = None,
+    ) -> dict[str, Any]:
         """Detection engine status for dashboard."""
         from sqlalchemy import func
 
         stmt = select(func.count(SecurityEvent.id))
         if owner_id:
             stmt = stmt.where(SecurityEvent.owner_id == owner_id)
+        if server_id:
+            stmt = stmt.where(SecurityEvent.server_id == server_id)
         event_count = self._session.scalar(stmt) or 0
-        scoped_owner_id = owner_id
-        if owner_id and event_count == 0:
-            logger.warning("No owner-scoped detection status events found for owner_id=%s; falling back to global read", owner_id)
-            scoped_owner_id = None
-            event_count = self._session.scalar(select(func.count(SecurityEvent.id))) or 0
-        alert_summary = self._alert_service.summary(owner_id=scoped_owner_id)
+        alert_summary = self._alert_service.summary(owner_id=owner_id, server_id=server_id)
         return {
             "engine": "DefenSync Hybrid Detection",
             "models": ["Isolation Forest", "Random Forest", "Rule Engine"],

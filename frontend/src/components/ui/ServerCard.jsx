@@ -1,13 +1,19 @@
-import { Link } from 'react-router-dom'
-import { Cpu, HardDrive, Network, Server, Terminal } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Cpu, HardDrive, Loader2, Network, Server, Terminal } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { StatusBadge } from './Badge'
 import Button from './Button'
 
-export default function ServerCard({ server, onTest, onCollect, onDelete, isAdmin }) {
+export default function ServerCard({ server, onOpen, onTest, onCollect, onDelete, isAdmin, busy = false }) {
+  const navigate = useNavigate()
   const isOnline = (server.connection_state || server.status || '').toLowerCase().includes('online')
   const risk = Number(server.risk_score || 0)
   const health = isOnline ? Math.max(62, 100 - risk) : 28
+
+  const openServer = () => {
+    if (onOpen) onOpen()
+    else navigate(`/servers/${server.id}`)
+  }
 
   return (
     <motion.article whileHover={{ y: -4 }} className="cyber-card group p-5">
@@ -18,9 +24,13 @@ export default function ServerCard({ server, onTest, onCollect, onDelete, isAdmi
               <Server className="relative h-6 w-6" />
             </div>
             <div className="min-w-0">
-              <Link to={`/servers/${server.id}`} className="block truncate text-lg font-semibold cyber-text transition-opacity hover:opacity-70">
+              <button
+                type="button"
+                onClick={openServer}
+                className="block truncate text-left text-lg font-semibold cyber-text transition-opacity hover:opacity-70"
+              >
                 {server.server_name}
-              </Link>
+              </button>
               <p className="mt-1 font-mono text-xs muted-text">{server.host}:{server.port}</p>
             </div>
           </div>
@@ -74,10 +84,22 @@ export default function ServerCard({ server, onTest, onCollect, onDelete, isAdmi
       </div>
 
       <div className="flex flex-wrap gap-2 border-t border-[var(--panel-border)] pt-3">
-        <Link to={`/servers/${server.id}`}><Button variant="ghost" size="sm"><Terminal className="h-4 w-4" /> Open</Button></Link>
-        <Button variant="secondary" size="sm" onClick={() => onTest?.(server.id)}>Test</Button>
-        <Button variant="primary" size="sm" onClick={() => onCollect?.(server.id)}>Collect</Button>
-        {isAdmin && <Button variant="danger" size="sm" onClick={() => onDelete?.(server.id)}>Delete</Button>}
+        <Button variant="ghost" size="sm" disabled={busy} onClick={openServer}>
+          <Terminal className="h-4 w-4" /> Open
+        </Button>
+        <Button variant="secondary" size="sm" disabled={busy} onClick={() => onTest?.()}>
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          Test
+        </Button>
+        <Button variant="primary" size="sm" disabled={busy} onClick={() => onCollect?.()}>
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          Collect
+        </Button>
+        {isAdmin && (
+          <Button variant="danger" size="sm" disabled={busy} onClick={() => onDelete?.()}>
+            Delete
+          </Button>
+        )}
       </div>
     </motion.article>
   )

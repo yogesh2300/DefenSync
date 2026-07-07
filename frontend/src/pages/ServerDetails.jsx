@@ -24,6 +24,15 @@ const FULL_LOG_SOURCES = [
   'journalctl', 'last', 'lastb', 'who', 'w', 'uptime', 'free', 'df', 'ps', 'ss', 'hostnamectl', 'uname',
 ]
 
+function apiError(err) {
+  const data = err.response?.data
+  if (!data) return err.message || 'Request failed'
+  if (typeof data.detail === 'string') return data.detail
+  if (typeof data.error === 'string') return data.error
+  if (Array.isArray(data.detail)) return data.detail.map((d) => d.msg).join(', ')
+  return JSON.stringify(data.detail || data.error || data)
+}
+
 export default function ServerDetails() {
   const { serverId } = useParams()
   const [server, setServer] = useState(null)
@@ -33,43 +42,90 @@ export default function ServerDetails() {
   const [risk, setRisk] = useState(null)
   const [tab, setTab] = useState('overview')
   const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
 
   const load = useCallback(async () => {
-    const [srv, st, lg, pred, rk] = await Promise.all([
-      getServer(serverId),
-      getServerStats(serverId),
-      getServerLogs(serverId, 50),
-      getAnomalies(15, serverId),
-      getServerRisk(serverId),
-    ])
-    setServer(srv)
-    setStats(st)
-    setLogs(lg)
-    setPredictions(pred)
-    setRisk(rk)
+    setLoading(true)
+    setError('')
+    try {
+      const [srvR, stR, lgR, predR, rkR] = await Promise.allSettled([
+        getServer(serverId),
+        getServerStats(serverId),
+        getServerLogs(serverId, 50),
+        getAnomalies(15, serverId),
+        getServerRisk(serverId),
+      ])
+
+      if (srvR.status === 'rejected') {
+        throw srvR.reason
+      }
+
+      setServer(srvR.value)
+      setStats(stR.status === 'fulfilled' ? stR.value : null)
+      setLogs(lgR.status === 'fulfilled' && Array.isArray(lgR.value) ? lgR.value : [])
+      setPredictions(predR.status === 'fulfilled' && Array.isArray(predR.value) ? predR.value : [])
+      setRisk(rkR.status === 'fulfilled' ? rkR.value : null)
+
+      const partialErrors = [stR, lgR, predR, rkR].filter((result) => result.status === 'rejected')
+      if (partialErrors.length) {
+        setError('Some server details could not be loaded. Showing available data.')
+      }
+    } catch (err) {
+      setServer(null)
+      setStats(null)
+      setLogs([])
+      setPredictions([])
+      setRisk(null)
+      setError(apiError(err))
+    } finally {
+      setLoading(false)
+    }
   }, [serverId])
 
   useEffect(() => { load() }, [load])
 
   const handleTest = async () => {
     setBusy(true)
-    const r = await testServerConnection(serverId)
-    setMessage(r.success ? `Connection successful (${r.latency_ms}ms)` : r.message)
-    await load()
-    setBusy(false)
+    setMessage('')
+    try {
+      const r = await testServerConnection(serverId)
+      setMessage(r.success ? `Connection successful (${r.latency_ms}ms)` : r.message || 'Connection test failed.')
+      await load()
+    } catch (err) {
+      setMessage(apiError(err))
+    } finally {
+      setBusy(false)
+    }
   }
 
   const handleCollect = async () => {
     setBusy(true)
-    setMessage('Running collection...')
-    const r = await collectServer(serverId, { tail_lines: 500, log_sources: FULL_LOG_SOURCES })
-    setMessage(`Done: ${r.collected_events ?? r.inserted} events collected`)
-    await load()
-    setBusy(false)
+    setMessage('')
+    try {
+      setMessage('Running collection...')
+      const r = await collectServer(serverId, { tail_lines: 500, log_sources: FULL_LOG_SOURCES })
+      const detectionNote = r.detection?.message ? ` — ${r.detection.message}` : ''
+      setMessage(`Done: ${r.collected_events ?? r.inserted} events collected${detectionNote}`)
+      await load()
+    } catch (err) {
+      setMessage(apiError(err))
+    } finally {
+      setBusy(false)
+    }
   }
 
-  if (!server) return <LoadingSpinner label="Loading server details..." />
+  if (loading) return <LoadingSpinner label="Loading server details..." />
+
+  if (!server) {
+    return (
+      <div className="page-shell">
+        <AlertBanner type="error" message={error || 'Unable to load this server.'} />
+        <Link to="/servers"><Button variant="secondary">Back to Servers</Button></Link>
+      </div>
+    )
+  }
 
   const metricsLog = logs.find((e) => e.cpu_usage || e.memory_usage || e.disk_usage)
   const riskScore = risk?.high_risk_events?.[0]?.risk_score ?? (logs[0]?.risk_score || 0)
@@ -84,12 +140,13 @@ export default function ServerDetails() {
           <>
             <Link to="/servers"><Button variant="secondary">Back</Button></Link>
             <Link to={`/servers/${serverId}/edit`}><Button variant="secondary">Edit</Button></Link>
-            <Button variant="secondary" onClick={handleTest} disabled={busy}>Test SSH</Button>
-            <Button onClick={handleCollect} disabled={busy}>Collect Logs</Button>
+            <Button variant="secondary" onClick={handleTest} disabled={busy}>{busy ? 'Testing...' : 'Test SSH'}</Button>
+            <Button onClick={handleCollect} disabled={busy}>{busy ? 'Collecting...' : 'Collect Logs'}</Button>
           </>
         }
       />
 
+      {error && <AlertBanner type="error" message={error} />}
       <AlertBanner message={message} />
 
       <div className="flex flex-wrap gap-2">
@@ -149,6 +206,12 @@ export default function ServerDetails() {
         </>
       )}
 
+      {tab === 'overview' && !stats && (
+        <Card title="Overview">
+          <p className="text-sm muted-text">Server statistics are unavailable right now.</p>
+        </Card>
+      )}
+
       {tab === 'logs' && (
         <Card title="Collected Logs">
           <DataTable
@@ -176,12 +239,12 @@ export default function ServerDetails() {
             ]}
             rows={predictions}
             keyField="event_id"
-            emptyMessage="No predictions yet. Run detection after collecting logs."
+            emptyMessage="No predictions yet. Collect logs to run detection automatically."
           />
         </Card>
       )}
 
-      {tab === 'alerts' && risk && (
+      {tab === 'alerts' && (
         <Card title="High-Risk Alerts">
           <DataTable
             columns={[
@@ -189,7 +252,7 @@ export default function ServerDetails() {
               { key: 'risk_score', label: 'Risk', render: (e) => <span className="text-red-400 font-semibold">{e.risk_score}</span> },
               { key: 'message', label: 'Message', render: (e) => e.message?.slice(0, 100) },
             ]}
-            rows={risk.high_risk_events || []}
+            rows={risk?.high_risk_events || []}
             keyField="event_id"
             emptyMessage="No high-risk alerts for this server."
           />

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from sqlalchemy import case, desc, func, select
+from sqlalchemy import case, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.database.models import CollectionRun, SecurityEvent, Server
@@ -25,12 +25,16 @@ def get_server(session: Session, server_id: str) -> Server | None:
     return session.get(Server, server_id)
 
 
+def _owner_clause(owner_id: str):
+    return or_(Server.owner_id == owner_id, Server.created_by == owner_id)
+
+
 def list_servers(session: Session, *, active_only: bool = False, owner_id: str | None = None) -> list[Server]:
     stmt = select(Server).order_by(desc(Server.created_at))
     if active_only:
         stmt = stmt.where(Server.status.in_(ACTIVE_STATUSES))
     if owner_id:
-        stmt = stmt.where(Server.owner_id == owner_id)
+        stmt = stmt.where(_owner_clause(owner_id))
     return list(session.scalars(stmt).all())
 
 
@@ -131,14 +135,44 @@ def high_risk_count_for_server(session: Session, server_id: str) -> int:
     ) or 0
 
 
-def server_summary(session: Session, *, owner_id: str | None = None) -> dict[str, int]:
+def server_summary(
+    session: Session,
+    *,
+    owner_id: str | None = None,
+    server_id: str | None = None,
+) -> dict[str, int]:
+    if server_id:
+        server = session.get(Server, server_id)
+        if server is None:
+            return {
+                "total_servers": 0,
+                "active_servers": 0,
+                "online_servers": 0,
+                "offline_servers": 0,
+            }
+        if owner_id and (server.owner_id or server.created_by) != owner_id:
+            return {
+                "total_servers": 0,
+                "active_servers": 0,
+                "online_servers": 0,
+                "offline_servers": 0,
+            }
+        is_active = server.status in ACTIVE_STATUSES
+        is_online = server.status == "online"
+        return {
+            "total_servers": 1,
+            "active_servers": 1 if is_active else 0,
+            "online_servers": 1 if is_online else 0,
+            "offline_servers": 1 if is_active and not is_online else 0,
+        }
+
     stmt = select(
         func.count(Server.id),
         func.sum(case((Server.status.in_(ACTIVE_STATUSES), 1), else_=0)),
         func.sum(case((Server.status == "online", 1), else_=0)),
     )
     if owner_id:
-        stmt = stmt.where(Server.owner_id == owner_id)
+        stmt = stmt.where(_owner_clause(owner_id))
     row = session.execute(stmt).one()
     total = int(row[0] or 0)
     active = int(row[1] or 0)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -13,10 +14,25 @@ from backend.core.exceptions import ResourceNotFoundError, ValidationException
 from backend.core.logging import get_logger
 from backend.database import server_crud
 from backend.database.models import Server
+from backend.services.detection_service import DetectionService
 from backend.services.pipeline_service import PipelineService
 from backend.services.ssh_service import SSHService
 
 logger = get_logger(__name__)
+
+
+def _run_post_collection_detection(owner_id: str | None, server_id: str) -> None:
+    """Run ML detection in a background thread so collect API responses return promptly."""
+    from backend.database.connection import get_session
+
+    session = get_session()
+    try:
+        DetectionService(session).run_detection(owner_id=owner_id, server_id=server_id)
+        logger.info("Background detection finished server_id=%s", server_id)
+    except Exception:
+        logger.exception("Background post-collection detection failed server_id=%s", server_id)
+    finally:
+        session.close()
 
 
 class ServerService:
@@ -208,6 +224,17 @@ class ServerService:
                 stats=stats,
             )
             self._session.commit()
+            if stats.get("success"):
+                owner_id = server.owner_id or server.created_by
+                threading.Thread(
+                    target=_run_post_collection_detection,
+                    args=(owner_id, server.id),
+                    daemon=True,
+                ).start()
+                stats["detection"] = {
+                    "status": "queued",
+                    "message": "ML detection started in background",
+                }
             return stats
         except Exception as exc:
             logger.exception("Collection failed for server=%s", server_id)

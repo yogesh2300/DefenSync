@@ -8,14 +8,14 @@ import {
   Server, ShieldAlert, TerminalSquare,
 } from 'lucide-react'
 import {
-  getAlertSummary, getDashboardSummary, getEventStats, getEvents, getHealth, getRecentEvents, getServers,
+  getAlertSummary, getDashboardSummary, getEventStats, getHealth, getRecentEvents,
 } from '../api/client'
+import { useSelectedServer } from '../context/SelectedServerContext'
 import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
 import PageHeader from '../components/ui/PageHeader'
 import RiskWidget from '../components/ui/RiskWidget'
-import { Select } from '../components/ui/Input'
 import { SeverityBadge, StatusBadge } from '../components/ui/Badge'
 
 const EMPTY_SUMMARY = {
@@ -102,45 +102,42 @@ function ActivityHeatmap({ data }) {
 }
 
 export default function Dashboard() {
+  const { selectedServerId, selectedServer, servers, isAllServers } = useSelectedServer()
   const [summary, setSummary] = useState(null)
   const [stats, setStats] = useState(null)
   const [recent, setRecent] = useState([])
   const [alerts, setAlerts] = useState(null)
   const [health, setHealth] = useState(null)
-  const [servers, setServers] = useState([])
-  const [selectedServer, setSelectedServer] = useState('')
-  const [serverEvents, setServerEvents] = useState([])
+  const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
-    const [s, st, r, a, h, srv] = await Promise.all([
-      withTimeout(getDashboardSummary(), EMPTY_SUMMARY),
-      withTimeout(getEventStats(), EMPTY_STATS),
-      withTimeout(getRecentEvents(10), []),
-      withTimeout(getAlertSummary(), EMPTY_ALERTS),
+    setLoading(true)
+    const serverId = selectedServerId || null
+    const [s, st, r, a, h] = await Promise.all([
+      withTimeout(getDashboardSummary(serverId), EMPTY_SUMMARY),
+      withTimeout(getEventStats(serverId), EMPTY_STATS),
+      withTimeout(getRecentEvents(10, serverId), []),
+      withTimeout(getAlertSummary(serverId), EMPTY_ALERTS),
       withTimeout(getHealth(), { database: 'unknown' }),
-      withTimeout(getServers(), []),
     ])
     setSummary({ ...EMPTY_SUMMARY, ...(s || {}) })
     setStats({ ...EMPTY_STATS, ...(st || {}) })
     setRecent(Array.isArray(r) ? r : [])
     setAlerts({ ...EMPTY_ALERTS, ...(a || {}) })
     setHealth(h || { database: 'unknown' })
-    setServers(Array.isArray(srv) ? srv : [])
-    if (selectedServer) {
-      const ev = await withTimeout(getEvents({ limit: 10, server_id: selectedServer }), [])
-      setServerEvents(Array.isArray(ev) ? ev : [])
-    } else {
-      setServerEvents([])
-    }
-  }, [selectedServer])
+    setLoading(false)
+  }, [selectedServerId])
 
   useEffect(() => {
     load()
     const id = setInterval(load, 15000)
-    window.addEventListener('defensync:data-refresh', load)
+    const onRefresh = () => load()
+    window.addEventListener('defensync:data-refresh', onRefresh)
+    window.addEventListener('defensync:server-changed', onRefresh)
     return () => {
       clearInterval(id)
-      window.removeEventListener('defensync:data-refresh', load)
+      window.removeEventListener('defensync:data-refresh', onRefresh)
+      window.removeEventListener('defensync:server-changed', onRefresh)
     }
   }, [load])
 
@@ -157,25 +154,22 @@ export default function Dashboard() {
     [stats],
   )
 
-  if (!summary || !stats) return <LoadingSpinner label="Loading Security Monitoring..." />
+  const visibleServers = useMemo(
+    () => (selectedServerId ? servers.filter((server) => server.id === selectedServerId) : servers),
+    [servers, selectedServerId],
+  )
 
-  const activity = selectedServer ? serverEvents : recent
+  if (loading || !summary || !stats) return <LoadingSpinner label="Loading Security Monitoring..." />
+
   const onlineRate = summary.total_servers ? Math.round((summary.online_servers / summary.total_servers) * 100) : 0
+  const scopeLabel = isAllServers ? 'All Servers' : selectedServer?.server_name || 'Selected Server'
 
   return (
     <div className="page-shell">
       <PageHeader
         title="DefenSync"
-        subtitle={`Security Monitoring - ${health?.database || 'connected'} database`}
-        actions={
-          <>
-            <Select value={selectedServer} onChange={(e) => setSelectedServer(e.target.value)} className="w-44">
-              <option value="">All Servers</option>
-              {servers.map((server) => <option key={server.id} value={server.id}>{server.server_name}</option>)}
-            </Select>
-            <Button variant="secondary" onClick={load}>Refresh</Button>
-          </>
-        }
+        subtitle={`Security Monitoring - ${scopeLabel} - ${health?.database || 'connected'} database`}
+        actions={<Button variant="secondary" onClick={load}>Refresh</Button>}
       />
 
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
@@ -189,7 +183,7 @@ export default function Dashboard() {
 
       <section className="grid gap-4 xl:grid-cols-12">
         <div className="grid gap-4 xl:col-span-8">
-          <Card title="Threat Overview" subtitle="Risk, alerts and auth pressure">
+          <Card title="Threat Overview" subtitle={`Risk, alerts and auth pressure - ${scopeLabel}`}>
             <div className="grid gap-4 lg:grid-cols-[180px_1fr]">
               <RiskWidget score={summary.average_risk_score} label="Risk Score" size="md" />
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -203,7 +197,7 @@ export default function Dashboard() {
 
           <Card title="Security Activity Timeline" subtitle="Newest events" className="flex flex-col">
             <div className="max-h-[320px] space-y-3 overflow-y-auto pr-1">
-              {activity.slice(0, 8).map((event, index) => (
+              {recent.slice(0, 8).map((event, index) => (
                 <div key={event.event_id || event.id || index} className="rounded-2xl border border-[var(--panel-border)] bg-[var(--panel-strong)] p-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <SeverityBadge severity={event.severity} />
@@ -216,7 +210,7 @@ export default function Dashboard() {
                   <p className="mt-1 text-[11px] muted-text">{event.hostname || event.server_id || 'Unknown host'}</p>
                 </div>
               ))}
-              {!activity.length && <p className="py-8 text-center text-sm muted-text">No recent activity yet.</p>}
+              {!recent.length && <p className="py-8 text-center text-sm muted-text">No recent activity yet.</p>}
             </div>
           </Card>
 
@@ -273,9 +267,9 @@ export default function Dashboard() {
         </div>
 
         <div className="grid gap-4 xl:col-span-4">
-          <Card title="Server Health" subtitle="Fleet status">
+          <Card title="Server Health" subtitle={isAllServers ? 'Fleet status' : 'Selected server'}>
             <div className="space-y-2">
-              {servers.slice(0, 5).map((server) => (
+              {visibleServers.slice(0, 5).map((server) => (
                 <div key={server.id} className="flex items-center justify-between gap-3 rounded-2xl border border-[var(--panel-border)] bg-[var(--panel-strong)] p-3">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold cyber-text">{server.server_name}</p>
@@ -284,7 +278,7 @@ export default function Dashboard() {
                   <StatusBadge status={server.status}>{server.connection_state || server.status}</StatusBadge>
                 </div>
               ))}
-              {!servers.length && <p className="py-4 text-center text-sm muted-text">No registered servers yet.</p>}
+              {!visibleServers.length && <p className="py-4 text-center text-sm muted-text">No registered servers yet.</p>}
             </div>
           </Card>
 

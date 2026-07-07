@@ -20,18 +20,33 @@ class DashboardService:
         """Initialize the dashboard service with a database session."""
         self._session = session
 
-    def dashboard_summary(self, *, owner_id: str | None = None) -> dict[str, int]:
+    def dashboard_summary(
+        self,
+        *,
+        owner_id: str | None = None,
+        server_id: str | None = None,
+    ) -> dict[str, int]:
         """Calculate and return overall SIEM summary statistics across collected security logs."""
         started = time.perf_counter()
-        logger.debug("Generating dashboard summary metrics owner_id=%s", owner_id)
+        logger.debug(
+            "Generating dashboard summary metrics owner_id=%s server_id=%s",
+            owner_id,
+            server_id,
+        )
         try:
             self._apply_statement_timeout()
-            summary = crud.dashboard_summary(self._session, owner_id=owner_id)
-            summary.update(server_crud.server_summary(self._session, owner_id=owner_id))
-            if owner_id and int(summary.get("total_events") or 0) == 0:
-                logger.warning("No owner-scoped dashboard events found for owner_id=%s; falling back to global read", owner_id)
-                summary = crud.dashboard_summary(self._session, owner_id=None)
-                summary.update(server_crud.server_summary(self._session, owner_id=None))
+            summary = crud.dashboard_summary(
+                self._session,
+                owner_id=owner_id,
+                server_id=server_id,
+            )
+            summary.update(
+                server_crud.server_summary(
+                    self._session,
+                    owner_id=owner_id,
+                    server_id=server_id,
+                )
+            )
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             if elapsed_ms > 750:
                 logger.warning("Dashboard summary query was slow: %sms owner_id=%s", elapsed_ms, owner_id)

@@ -38,22 +38,42 @@ class EventService:
             raise ResourceNotFoundError(f"Security event '{event_id}' not found.")
         return event
 
-    def get_recent_events(self, limit: int = 100, owner_id: str | None = None) -> list[SecurityEvent]:
+    def get_recent_events(
+        self,
+        limit: int = 100,
+        owner_id: str | None = None,
+        server_id: str | None = None,
+    ) -> list[SecurityEvent]:
         """Retrieve recent security events ordered by timestamp."""
-        logger.debug("Retrieving recent events with limit=%d", limit)
-        rows = crud.get_recent_events(self._session, limit=limit, owner_id=owner_id)
-        if owner_id and not rows:
-            logger.warning("No owner-scoped recent events found for owner_id=%s; falling back to global read", owner_id)
-            rows = crud.get_recent_events(self._session, limit=limit, owner_id=None)
-        return rows
+        logger.debug("Retrieving recent events with limit=%d server_id=%s", limit, server_id)
+        return crud.get_recent_events(
+            self._session,
+            limit=limit,
+            owner_id=owner_id,
+            server_id=server_id,
+        )
 
-    def get_high_risk_events(self, min_score: int = 70, limit: int = 100, owner_id: str | None = None) -> list[SecurityEvent]:
+    def get_high_risk_events(
+        self,
+        min_score: int = 70,
+        limit: int = 100,
+        owner_id: str | None = None,
+        server_id: str | None = None,
+    ) -> list[SecurityEvent]:
         """Retrieve events at or above the minimum risk score threshold."""
-        logger.debug("Retrieving high-risk events with min_score=%d and limit=%d", min_score, limit)
-        rows = crud.get_high_risk_events(self._session, min_score=min_score, limit=limit, owner_id=owner_id)
-        if owner_id and not rows:
-            rows = crud.get_high_risk_events(self._session, min_score=min_score, limit=limit, owner_id=None)
-        return rows
+        logger.debug(
+            "Retrieving high-risk events with min_score=%d limit=%d server_id=%s",
+            min_score,
+            limit,
+            server_id,
+        )
+        return crud.get_high_risk_events(
+            self._session,
+            min_score=min_score,
+            limit=limit,
+            owner_id=owner_id,
+            server_id=server_id,
+        )
 
     def get_events_by_username(self, username: str, limit: int = 100) -> list[SecurityEvent]:
         """Retrieve security events associated with a specific username."""
@@ -103,7 +123,7 @@ class EventService:
             search,
             event_type,
         )
-        rows = crud.query_events(
+        return crud.query_events(
             self._session,
             limit=limit,
             offset=offset,
@@ -122,28 +142,6 @@ class EventService:
             max_risk_score=max_risk_score,
             sort_order=sort_order,
         )
-        if owner_id and offset == 0 and not rows:
-            logger.warning("No owner-scoped events found for owner_id=%s; falling back to global event read", owner_id)
-            rows = crud.query_events(
-                self._session,
-                limit=limit,
-                offset=offset,
-                event_type=event_type,
-                severity=severity,
-                category=category,
-                username=username,
-                source_ip=source_ip,
-                hostname=hostname,
-                server_id=server_id,
-                owner_id=None,
-                start_time=start_time,
-                end_time=end_time,
-                search=search,
-                min_risk_score=min_risk_score,
-                max_risk_score=max_risk_score,
-                sort_order=sort_order,
-            )
-        return rows
 
     def count_events(
         self,
@@ -155,6 +153,7 @@ class EventService:
         source_ip: str | None = None,
         hostname: str | None = None,
         server_id: str | None = None,
+        owner_id: str | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
         search: str | None = None,
@@ -171,6 +170,7 @@ class EventService:
             source_ip=source_ip,
             hostname=hostname,
             server_id=server_id,
+            owner_id=owner_id,
             start_time=start_time,
             end_time=end_time,
             search=search,

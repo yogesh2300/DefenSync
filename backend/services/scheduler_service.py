@@ -26,13 +26,20 @@ def _collect_all_job() -> None:
         )
         logger.info("Scheduled collection finished servers=%d", len(results))
 
+        owners = {
+            (server.owner_id or server.created_by)
+            for server in server_service.list_servers(active_only=True)
+            if server.owner_id or server.created_by
+        }
         detection = DetectionService(session)
-        detection_result = detection.run_detection()
-        logger.info(
-            "Scheduled detection complete events=%s flagged=%s",
-            detection_result.get("events_analyzed"),
-            detection_result.get("total_flagged"),
-        )
+        for owner_id in owners:
+            detection_result = detection.run_detection(owner_id=owner_id)
+            logger.info(
+                "Scheduled detection complete owner=%s events=%s flagged=%s",
+                owner_id,
+                detection_result.get("events_analyzed"),
+                detection_result.get("total_flagged"),
+            )
     except Exception as exc:
         logger.exception("Scheduled collection job failed: %s", exc)
     finally:

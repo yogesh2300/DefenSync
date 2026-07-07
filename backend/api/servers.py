@@ -294,8 +294,8 @@ def server_risk(
     service: ServerService = Depends(get_server_service),
     events: EventService = Depends(get_event_service),
 ) -> Any:
-    stats = service.server_stats(server_id)
     require_server_access(service, server_id, current_user)
+    stats = service.server_stats(server_id)
     owner_id = None if is_admin(current_user) else current_user.id
     high_risk = events.get_high_risk_events(min_score=70, limit=100, owner_id=owner_id)
     server_high_risk = [

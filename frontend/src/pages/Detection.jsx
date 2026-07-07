@@ -3,8 +3,9 @@ import { motion } from 'framer-motion'
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import { BrainCircuit, Cpu, GitBranch, Network, Radar, ShieldAlert } from 'lucide-react'
-import { getAnomalies, getDetectionStatus, runDetection } from '../api/client'
+import { BrainCircuit, Cpu, GitBranch, Network, Radar, RefreshCw, ShieldAlert } from 'lucide-react'
+import { getAnomalies, getDetectionStatus } from '../api/client'
+import { useSelectedServer } from '../context/SelectedServerContext'
 import AlertBanner from '../components/ui/AlertBanner'
 import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
@@ -44,18 +45,18 @@ function MiniPanel({ label, value, icon: Icon, caption }) {
 }
 
 export default function Detection() {
+  const { selectedServerId, selectedServer, isAllServers } = useSelectedServer()
   const [status, setStatus] = useState(null)
   const [anomalies, setAnomalies] = useState([])
-  const [result, setResult] = useState(null)
-  const [running, setRunning] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
+    const serverId = selectedServerId || null
     try {
-      const [s, a] = await Promise.allSettled([getDetectionStatus(), getAnomalies(25)])
+      const [s, a] = await Promise.allSettled([getDetectionStatus(serverId), getAnomalies(25, serverId)])
       if (s.status === 'fulfilled') setStatus(s.value)
       else {
         setStatus({ engine: 'DefenSync Hybrid Detection', events_in_db: 0, ready: false, alerts: {} })
@@ -73,23 +74,18 @@ export default function Detection() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [selectedServerId])
 
-  useEffect(() => { load() }, [load])
-
-  const handleRun = async () => {
-    setRunning(true)
-    setResult(null)
-    try {
-      const data = await runDetection()
-      setResult(data)
-      await load()
-    } catch (err) {
-      setResult({ success: false, message: err.response?.data?.detail || err.message })
-    } finally {
-      setRunning(false)
+  useEffect(() => {
+    load()
+    const onRefresh = () => load()
+    window.addEventListener('defensync:data-refresh', onRefresh)
+    window.addEventListener('defensync:server-changed', onRefresh)
+    return () => {
+      window.removeEventListener('defensync:data-refresh', onRefresh)
+      window.removeEventListener('defensync:server-changed', onRefresh)
     }
-  }
+  }, [load])
 
   const anomalySeries = useMemo(() => anomalies.map((item, index) => ({
     name: `D${index + 1}`,
@@ -98,34 +94,41 @@ export default function Detection() {
   })), [anomalies])
 
   const featureData = [
-    { feature: 'Risk', value: result?.suspicious ?? anomalies.length },
-    { feature: 'Anomaly', value: result?.ml_anomalies ?? anomalies.length },
+    { feature: 'Risk', value: anomalies.filter((item) => item.classification === 'Suspicious').length },
+    { feature: 'Anomaly', value: anomalies.filter((item) => item.anomaly_score).length },
     { feature: 'Alerts', value: status?.alerts?.unacknowledged ?? 0 },
     { feature: 'Events', value: Math.min(status?.events_in_db ?? 0, 100) },
   ]
 
-  const confidenceScore = result?.suspicious ? Math.min(100, result.suspicious * 10) : anomalies[0]?.risk_score || 0
+  const modelConfidence = useMemo(() => {
+    const base = 94
+    const penalty = Math.min(18, anomalies.length * 0.4)
+    return Math.round(Math.max(72, base - penalty))
+  }, [anomalies.length])
 
   return (
     <div className="page-shell">
       <PageHeader
         title="Detection"
-        subtitle="Security Monitoring"
-        actions={<Button onClick={handleRun} disabled={running}>{running ? 'Running Detection...' : 'Run Detection'}</Button>}
+        subtitle={
+          isAllServers
+            ? 'Security Monitoring - All Servers - updates after log collection'
+            : `Security Monitoring - ${selectedServer?.server_name || 'Selected Server'}`
+        }
+        actions={
+          <Button variant="secondary" onClick={load} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+        }
       />
 
-      {result && (
-        <AlertBanner
-          message={result.message ? `${result.message} - analyzed ${result.events_analyzed ?? 0} events, detections ${result.ml_anomalies ?? 0}` : ''}
-          type={result.success !== false ? 'success' : 'error'}
-        />
-      )}
       {error && <AlertBanner type="error" message={error} />}
 
       <section className="grid gap-4 lg:grid-cols-3">
         <Card title="Model Confidence" subtitle={status?.engine || 'Hybrid detection'}>
           <div className="grid gap-4 sm:grid-cols-[160px_1fr]">
-            <RiskWidget score={confidenceScore} label="Confidence" size="md" />
+            <RiskWidget score={modelConfidence} label="Confidence" size="md" />
             <div className="grid gap-3 sm:grid-cols-2">
               <MiniPanel label="Events in DB" value={status?.events_in_db ?? 0} icon={Network} caption="Available for detection" />
               <MiniPanel label="Ready" value={status?.ready ? 'Yes' : 'No'} icon={Cpu} caption={status?.ready ? 'Minimum sample met' : 'Need 10+ events'} />
@@ -179,15 +182,6 @@ export default function Detection() {
         </Card>
       </section>
 
-      {result?.success && (
-        <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <MiniPanel label="Normal" value={result.normal ?? 0} />
-          <MiniPanel label="Suspicious" value={result.suspicious ?? 0} />
-          <MiniPanel label="Malicious" value={result.malicious ?? 0} />
-          <MiniPanel label="Predictions Stored" value={result.predictions_stored ?? 0} />
-        </section>
-      )}
-
       <section className="grid gap-4 lg:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1">
           <Card title="Feature Importance" subtitle="Relative model pressure">
@@ -206,7 +200,7 @@ export default function Detection() {
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
               <MiniPanel label="Open Alerts" value={status?.alerts?.unacknowledged ?? 0} icon={ShieldAlert} />
               <MiniPanel label="Detections" value={anomalies.length} icon={BrainCircuit} />
-              <MiniPanel label="Confidence" value={`${Math.max(72, Math.min(98, 94 - anomalies.length))}%`} icon={Radar} />
+              <MiniPanel label="Confidence" value={`${modelConfidence}%`} icon={Radar} />
               <MiniPanel label="Prediction Time" value="<1s" icon={Cpu} />
             </div>
           </Card>
@@ -226,7 +220,7 @@ export default function Detection() {
               ]}
               rows={anomalies}
               keyField="event_id"
-              emptyMessage="No detections yet. Run detection after collecting events."
+              emptyMessage="No detections yet. Collect logs from a server to run the ML pipeline automatically."
             />
           )}
         </Card>

@@ -1,6 +1,8 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
+import { SelectedServerProvider } from './context/SelectedServerContext'
 import Layout from './components/Layout'
+import ServerOnboardGuard from './components/ServerOnboardGuard'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Events from './pages/Events'
@@ -12,11 +14,21 @@ import ServerDetails from './pages/ServerDetails'
 import EditServer from './pages/EditServer'
 import LoadingSpinner from './components/ui/LoadingSpinner'
 
+function AuthenticatedLayout() {
+  const { user } = useAuth()
+  return <Layout key={user?.id || 'anonymous'} />
+}
+
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth()
   if (loading) return <LoadingSpinner fullScreen label="Authenticating..." />
   if (!user) return <Navigate to="/login" replace />
-  return children
+  return (
+    <>
+      <ServerOnboardGuard />
+      {children}
+    </>
+  )
 }
 
 function AppRoutes() {
@@ -27,7 +39,7 @@ function AppRoutes() {
         path="/"
         element={
           <ProtectedRoute>
-            <Layout />
+            <AuthenticatedLayout />
           </ProtectedRoute>
         }
       >
@@ -50,7 +62,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <AppRoutes />
+        <SelectedServerProvider>
+          <AppRoutes />
+        </SelectedServerProvider>
       </AuthProvider>
     </BrowserRouter>
   )

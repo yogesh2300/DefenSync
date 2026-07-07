@@ -8,6 +8,7 @@ import Card from '../components/ui/Card'
 import PageHeader from '../components/ui/PageHeader'
 import { Input, Select } from '../components/ui/Input'
 import { useAuth } from '../context/AuthContext'
+import { useSelectedServer } from '../context/SelectedServerContext'
 
 const LOG_SOURCE_OPTIONS = ['journalctl', 'last', 'lastb', 'who', 'w', 'uptime', 'free', 'df', 'ps', 'ss', 'hostnamectl', 'uname']
 
@@ -29,6 +30,7 @@ function StepBlock({ number, title, text, active }) {
 
 export default function Collection() {
   const { isAdmin } = useAuth()
+  const { selectedServerId } = useSelectedServer()
   const [servers, setServers] = useState([])
   const [serverId, setServerId] = useState('')
   const [tailLines, setTailLines] = useState(500)
@@ -39,6 +41,10 @@ export default function Collection() {
   useEffect(() => {
     getServers(true).then(setServers).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (selectedServerId) setServerId(selectedServerId)
+  }, [selectedServerId])
 
   if (!isAdmin) return <Navigate to="/" replace />
 
