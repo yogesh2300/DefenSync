@@ -347,7 +347,7 @@ export default function Dashboard() {
             <div className="grid gap-2">
               <CompactMetric label="Database" value={health?.database || 'unknown'} icon={DatabaseZap} />
               <CompactMetric label="Unique Users" value={summary.unique_users} icon={Activity} />
-              <CompactMetric label="Model Accuracy" value="94%" icon={BrainCircuit} />
+              <CompactMetric label="Detection Engine" value="IF + RF Active" icon={BrainCircuit} />
             </div>
           </Card>
         </div>

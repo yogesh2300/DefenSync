@@ -100,11 +100,15 @@ export default function Detection() {
     { feature: 'Events', value: Math.min(status?.events_in_db ?? 0, 100) },
   ]
 
-  const modelConfidence = useMemo(() => {
-    const base = 94
-    const penalty = Math.min(18, anomalies.length * 0.4)
-    return Math.round(Math.max(72, base - penalty))
-  }, [anomalies.length])
+  // Derive a live anomaly rate (0-100) from actual DB data for the risk gauge.
+  // This is NOT a model accuracy figure; it represents the fraction of
+  // flagged events relative to total events in the DB (capped for display).
+  const anomalyRate = useMemo(() => {
+    const total = status?.events_in_db ?? 0
+    if (!total) return 0
+    const flagged = anomalies.length
+    return Math.min(100, Math.round((flagged / Math.max(total, flagged)) * 100))
+  }, [anomalies.length, status?.events_in_db])
 
   return (
     <div className="page-shell">
@@ -126,12 +130,12 @@ export default function Detection() {
       {error && <AlertBanner type="error" message={error} />}
 
       <section className="grid gap-4 lg:grid-cols-3">
-        <Card title="Model Confidence" subtitle={status?.engine || 'Hybrid detection'}>
+        <Card title="Detection Engine" subtitle={status?.engine || 'Hybrid ML Detection'}>
           <div className="grid gap-4 sm:grid-cols-[160px_1fr]">
-            <RiskWidget score={modelConfidence} label="Confidence" size="md" />
+            <RiskWidget score={anomalyRate} label="Anomaly %" size="md" />
             <div className="grid gap-3 sm:grid-cols-2">
               <MiniPanel label="Events in DB" value={status?.events_in_db ?? 0} icon={Network} caption="Available for detection" />
-              <MiniPanel label="Ready" value={status?.ready ? 'Yes' : 'No'} icon={Cpu} caption={status?.ready ? 'Minimum sample met' : 'Need 10+ events'} />
+              <MiniPanel label="Engine Ready" value={status?.ready ? 'Yes' : 'No'} icon={Cpu} caption={status?.ready ? 'Isolation Forest + Random Forest' : 'Need 10+ events'} />
             </div>
           </div>
         </Card>
@@ -184,7 +188,7 @@ export default function Detection() {
 
       <section className="grid gap-4 lg:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1">
-          <Card title="Feature Importance" subtitle="Relative model pressure">
+          <Card title="Detection Breakdown" subtitle="Event counts by signal type">
             <ResponsiveContainer width="100%" height={180}>
               <BarChart data={featureData}>
                 <CartesianGrid stroke="rgba(148,163,184,0.12)" strokeDasharray="3 3" />
@@ -200,7 +204,7 @@ export default function Detection() {
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
               <MiniPanel label="Open Alerts" value={status?.alerts?.unacknowledged ?? 0} icon={ShieldAlert} />
               <MiniPanel label="Detections" value={anomalies.length} icon={BrainCircuit} />
-              <MiniPanel label="Confidence" value={`${modelConfidence}%`} icon={Radar} />
+              <MiniPanel label="Anomaly Rate" value={`${anomalyRate}%`} icon={Radar} />
               <MiniPanel label="Prediction Time" value="<1s" icon={Cpu} />
             </div>
           </Card>
