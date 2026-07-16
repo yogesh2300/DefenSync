@@ -40,3 +40,24 @@ htmlcov/
 
 # Misc
 *.swp
+
+# Research datasets
+datasets/**/raw/*
+datasets/**/*.log
+datasets/**/*.zip
+datasets/**/*.tar
+datasets/**/*.tar.gz
+
+# Keep folder structure
+!datasets/**/raw/.gitkeep
+!datasets/**/processed/.gitkeep
+!datasets/**/README.md
+
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+cls
+research/
+datasets/**/raw/
+datasets/**/*.zip
+datasets/**/*.tar
+datasets/**/*.tar.gz
