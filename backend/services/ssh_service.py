@@ -137,6 +137,48 @@ class SSHService:
         return SSHService.probe_connectivity(config)["health_status"] == "online"
 
     @staticmethod
+    def _human_ssh_error(exc: Exception, host: str, port: int) -> str:
+        """Translate a raw SSH/socket exception into a clear user-facing message."""
+        import socket as _socket
+
+        msg = str(exc).lower()
+
+        if isinstance(exc, paramiko.AuthenticationException):
+            return (
+                f"Authentication failed for host {host}:{port}. "
+                "Check the SSH username and password (or private key)."
+            )
+        if isinstance(exc, (TimeoutError, _socket.timeout)) or "timed out" in msg:
+            return (
+                f"Connection timed out while reaching {host}:{port}. "
+                "The server may be unreachable or firewalled."
+            )
+        if isinstance(exc, ConnectionRefusedError) or "connection refused" in msg:
+            return (
+                f"Connection refused by {host}:{port}. "
+                "SSH service may not be running or port {port} is blocked.".replace("{port}", str(port))
+            )
+        if isinstance(exc, _socket.gaierror) or "name or service not known" in msg or "nodename nor servname" in msg:
+            return (
+                f"Cannot resolve hostname '{host}'. "
+                "Check that the IP address or hostname is correct."
+            )
+        if "no route to host" in msg or isinstance(exc, OSError) and "unreachable" in msg:
+            return (
+                f"Host {host} is unreachable. "
+                "Verify the server is online and the network path is open."
+            )
+        if "authentication" in msg or "auth" in msg:
+            return (
+                f"Authentication failed for host {host}:{port}. "
+                "Check the SSH username and credentials."
+            )
+        if "ssh" in msg and "not available" in msg:
+            return f"SSH service unavailable on {host}:{port}."
+        # Fallback: include the raw message but prefix it clearly
+        return f"SSH connection to {host}:{port} failed: {exc}"
+
+    @staticmethod
     def test_config(config: SSHConfig) -> dict[str, Any]:
         """Verify SSH connectivity via Paramiko and return latency, OS, and status."""
         started = datetime.now(timezone.utc)
@@ -157,11 +199,12 @@ class SSHService:
                 "operating_system": detected_os,
             }
         except Exception as exc:
-            logger.warning("SSH test failed for host=%s: %s", config.host, exc)
+            friendly = SSHService._human_ssh_error(exc, config.host, config.port)
+            logger.warning("SSH test failed for host=%s port=%s: %s", config.host, config.port, exc)
             return {
                 "success": False,
                 "connected": False,
-                "message": str(exc),
+                "message": friendly,
                 "latency_ms": None,
                 "hostname": None,
                 "operating_system": None,

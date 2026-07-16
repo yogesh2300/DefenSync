@@ -1,6 +1,7 @@
 """Health check API endpoint for DefenSync service readiness."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from backend.core.logging import get_logger
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -31,5 +32,8 @@ def health_check(db: Session = Depends(get_db)) -> dict[str, Any]:
     return {
         "status": "healthy",
         "service": "DefenSync Behavioral Log Intelligence System",
+        "version": "2.0.0",
         "database": db_status,
+        "ml_engine": "Isolation Forest + Random Forest",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
     }

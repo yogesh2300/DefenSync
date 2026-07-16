@@ -18,7 +18,7 @@ def ensure_default_admin() -> None:
     session = get_session()
     try:
         if admin_user_exists(session):
-            logger.info("ADMIN user already exists; skipping default admin bootstrap.")
+            logger.info("Default admin already exists.")
             return
 
         password = settings.DEFAULT_ADMIN_PASSWORD.get_secret_value()
@@ -42,7 +42,7 @@ def ensure_default_admin() -> None:
             password=password,
             role="ADMIN",
         )
-        logger.info("Default ADMIN user created (username=%s).", username)
+        logger.info("Default admin created successfully (username=%s).", username)
     except ValidationException as exc:
         logger.warning("Could not create default ADMIN user: %s", exc.message)
     except Exception:

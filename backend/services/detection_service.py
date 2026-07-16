@@ -93,7 +93,14 @@ class DetectionService:
         events = self._load_events(owner_id=owner_id, server_id=server_id)
         rule_created = self._alert_service.sync_from_events(owner_id=owner_id)
 
-        if len(events) < 10:
+        _ML_MIN_EVENTS = 10
+        if len(events) < _ML_MIN_EVENTS:
+            logger.warning(
+                "Detection skipped: minimum event threshold not reached "
+                "(current: %d, required: %d). Rule-based alerts synced.",
+                len(events),
+                _ML_MIN_EVENTS,
+            )
             return {
                 "success": True,
                 "events_analyzed": len(events),
@@ -104,7 +111,11 @@ class DetectionService:
                 "suspicious": len([e for e in events if 70 <= e.risk_score < 85]),
                 "malicious": len([e for e in events if e.risk_score >= 85]),
                 "predictions_stored": 0,
-                "message": "Need at least 10 events for ML detection. Rule-based alerts synced.",
+                "message": (
+                    f"Detection skipped: minimum event threshold not reached "
+                    f"(current: {len(events)}, required: {_ML_MIN_EVENTS}). "
+                    "Rule-based alerts synced."
+                ),
             }
 
         features = self._features(events)

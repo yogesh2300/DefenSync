@@ -40,15 +40,39 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting DefenSync API...")
 
-    # Create all database tables
-    metadata_tables = sorted(Base.metadata.tables.keys())
-    print(f"SQLAlchemy metadata tables before create_all: {metadata_tables}")
-    logger.info("SQLAlchemy metadata tables before create_all: %s", metadata_tables)
-    Base.metadata.create_all(bind=get_engine())
+    # -------------------------------------------------------------------------
+    # Database startup: verify connection, then ensure schema is up to date
+    # -------------------------------------------------------------------------
+    engine = get_engine()
+    try:
+        from sqlalchemy import text as _text, inspect as _inspect
+        with engine.connect() as conn:
+            conn.execute(_text("SELECT 1"))
+        logger.info("Database connection verified successfully.")
+    except Exception as _db_exc:
+        logger.critical(
+            "Database connection FAILED at startup: %s — "
+            "check DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD in .env.",
+            _db_exc,
+        )
+        raise
+
+    expected_tables = sorted(Base.metadata.tables.keys())
+    logger.info("Expected ORM tables: %s", expected_tables)
+
+    Base.metadata.create_all(bind=engine)
+
+    # Verify all expected tables now exist in the database
+    inspector = _inspect(engine)
+    existing_tables = sorted(inspector.get_table_names())
+    missing = [t for t in expected_tables if t not in existing_tables]
+    if missing:
+        logger.error("The following tables are MISSING from the database after create_all: %s", missing)
+    else:
+        logger.info("All required tables present in database: %s", expected_tables)
 
     ensure_default_admin()
 
-    logger.info("Database tables verified. Registered metadata tables: %s", sorted(Base.metadata.tables.keys()))
     start_scheduler()
     start_health_engine()
 

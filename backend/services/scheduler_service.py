@@ -91,12 +91,20 @@ def start_scheduler() -> None:
             replace_existing=True,
         )
         logger.info(
-            "Collection scheduler registered every %dm",
+            "Automatic log collection ENABLED — running every %d minutes (COLLECTION_INTERVAL_MINUTES=%d).",
+            settings.COLLECTION_INTERVAL_MINUTES,
+            settings.COLLECTION_INTERVAL_MINUTES,
+        )
+    else:
+        logger.info(
+            "Automatic log collection DISABLED (SCHEDULER_ENABLED=false). "
+            "Set SCHEDULER_ENABLED=true in .env to enable automatic log collection every %d minutes. "
+            "Manual collection via the UI or POST /api/v1/servers/{id}/collect remains available.",
             settings.COLLECTION_INTERVAL_MINUTES,
         )
 
     if not settings.HEALTH_CHECK_ENABLED and not settings.SCHEDULER_ENABLED:
-        logger.info("Background scheduler disabled (enable HEALTH_CHECK_ENABLED or SCHEDULER_ENABLED).")
+        logger.info("Background scheduler disabled — both HEALTH_CHECK_ENABLED and SCHEDULER_ENABLED are false.")
         return
 
     _scheduler.start()
