@@ -3,7 +3,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
   Activity, Bell, BrainCircuit, ChevronLeft, ChevronRight, DatabaseZap,
   LayoutDashboard, LogOut, Menu, Search, Server, ShieldCheck, TerminalSquare,
-  TriangleAlert,
+  TriangleAlert, Network,
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { useAuth } from '../context/AuthContext'
@@ -16,6 +16,7 @@ const NAV = [
   { to: '/events', label: 'Events', icon: TerminalSquare },
   { to: '/alerts', label: 'Alerts', icon: TriangleAlert },
   { to: '/detection', label: 'Detection', icon: BrainCircuit },
+  { to: '/intelligence', label: 'DefenSync Intelligence', icon: Network },
   { to: '/collection', label: 'Collection', icon: DatabaseZap, adminOnly: true },
 ]
 

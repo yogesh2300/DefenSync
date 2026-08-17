@@ -25,6 +25,9 @@ from backend.parser.openstack_parser import (
     normalize_openstack_severity,
     parse_openstack_line,
 )
+
+DEMO_DATA_ORIGIN = "SYNTHETIC_CLOUD_DEMO"
+DEMO_DATASET_NAME = "DEFENSYNC_OPENSTACK_DEMO"
 from backend.services.datasets.openstack_discovery import DatasetFile, OpenStackDiscoveryService
 
 logger = logging.getLogger(__name__)
@@ -63,6 +66,9 @@ class OpenStackImportService:
 
         limit = self._normalize_limit(max_records)
         effective_batch = self._normalize_batch_size(batch_size)
+        existing = self._find_completed_import(owner_id=owner_id, file_hash=file_hash)
+        if existing and not allow_reimport:
+            return existing
         run = self._prepare_import_run(
             owner_id=owner_id,
             file_info=selected,
@@ -129,7 +135,12 @@ class OpenStackImportService:
             raise
 
     def list_imports(self, *, owner_id: str | None = None, limit: int = 50) -> list[DatasetImport]:
-        stmt = select(DatasetImport).order_by(desc(DatasetImport.created_at)).limit(limit)
+        stmt = (
+            select(DatasetImport)
+            .where(DatasetImport.dataset_name.in_((DATASET_NAME, DEMO_DATASET_NAME)))
+            .order_by(desc(DatasetImport.created_at))
+            .limit(limit)
+        )
         if owner_id:
             stmt = stmt.where(DatasetImport.owner_id == owner_id)
         return list(self._session.scalars(stmt).all())
@@ -143,11 +154,7 @@ class OpenStackImportService:
     def summary(self, *, owner_id: str | None = None) -> dict[str, Any]:
         total = self._session.scalar(
             select(func.count(SecurityEvent.id)).where(
-                SecurityEvent.source_type == "CLOUD",
-                SecurityEvent.provider == PROVIDER,
-                SecurityEvent.data_origin == DATA_ORIGIN,
-                SecurityEvent.dataset_name == DATASET_NAME,
-                *( [SecurityEvent.owner_id == owner_id] if owner_id else [] ),
+                *self._openstack_clauses(owner_id=owner_id),
             )
         ) or 0
         normal = self._count_events(owner_id=owner_id, original_label="NORMAL")
@@ -170,7 +177,7 @@ class OpenStackImportService:
         ]
         latest_import = self._session.scalar(
             select(DatasetImport).where(
-                DatasetImport.dataset_name == DATASET_NAME,
+                DatasetImport.dataset_name.in_((DATASET_NAME, DEMO_DATASET_NAME)),
                 *( [DatasetImport.owner_id == owner_id] if owner_id else [] ),
             ).order_by(desc(DatasetImport.created_at)).limit(1)
         )
@@ -186,6 +193,36 @@ class OpenStackImportService:
             "event_types_represented": event_types,
             "most_recent_import": self.import_to_dict(latest_import) if latest_import else None,
         }
+
+    def import_and_prepare(
+        self,
+        *,
+        file_id: str,
+        owner_id: str,
+        max_records: int | None = None,
+        batch_size: int | None = None,
+        allow_reimport: bool = False,
+        line_offset: int = 0,
+    ) -> dict[str, Any]:
+        selected = self._get_discovered_file(file_id)
+        path = self._discovery.resolve_file_id(file_id)
+        file_hash = self._sha256_file(path)
+        existing = self._find_completed_import(owner_id=owner_id, file_hash=file_hash)
+        run = self.import_file(
+            file_id=file_id,
+            owner_id=owner_id,
+            max_records=max_records,
+            batch_size=batch_size,
+            allow_reimport=allow_reimport,
+            line_offset=line_offset,
+        )
+        payload = self.import_to_dict(run)
+        payload["already_imported"] = bool(existing) and not allow_reimport
+        payload["provider"] = PROVIDER
+        origin, dataset = origin_fields_for_path(selected.relative_path)
+        payload["data_origin"] = origin
+        payload["dataset"] = dataset
+        return payload
 
     @staticmethod
     def import_to_dict(run: DatasetImport) -> dict[str, Any]:
@@ -210,6 +247,16 @@ class OpenStackImportService:
             "updated_at": run.updated_at,
         }
 
+    def _find_completed_import(self, *, owner_id: str, file_hash: str) -> DatasetImport | None:
+        return self._session.scalar(
+            select(DatasetImport).where(
+                DatasetImport.owner_id == owner_id,
+                DatasetImport.source_file_hash == file_hash,
+                DatasetImport.dataset_name.in_((DATASET_NAME, DEMO_DATASET_NAME)),
+                DatasetImport.status.in_(("COMPLETED", "PARTIAL")),
+            )
+        )
+
     def _get_discovered_file(self, file_id: str) -> DatasetFile:
         for item in self._discovery.discover_files():
             if item.file_id == file_id:
@@ -229,19 +276,19 @@ class OpenStackImportService:
         existing = self._session.scalar(
             select(DatasetImport).where(
                 DatasetImport.owner_id == owner_id,
-                DatasetImport.dataset_name == DATASET_NAME,
                 DatasetImport.source_file_hash == file_hash,
+                DatasetImport.dataset_name.in_((DATASET_NAME, DEMO_DATASET_NAME)),
             )
         )
-        if existing and not allow_reimport:
-            raise ValidationException(
-                "This OpenStack dataset file was already imported for the current user. "
-                "Set allow_reimport=true to explicitly re-run it."
-            )
-        run = existing if existing and allow_reimport else DatasetImport()
+        if existing and existing.status in {"COMPLETED", "PARTIAL"} and not allow_reimport:
+            return existing
+        if existing and not allow_reimport and existing.status not in {"FAILED", "RUNNING"}:
+            return existing
+        run = existing if existing else DatasetImport()
+        origin, dataset_name = origin_fields_for_path(file_info.relative_path)
         run.owner_id = owner_id
-        run.dataset_name = DATASET_NAME
-        run.dataset_version = "public-loghub"
+        run.dataset_name = dataset_name
+        run.dataset_version = "synthetic-demo" if origin == DEMO_DATA_ORIGIN else "public-loghub"
         run.source_file = file_info.relative_path
         run.source_file_hash = file_hash
         run.status = "RUNNING"
@@ -273,8 +320,13 @@ class OpenStackImportService:
         parsed = parse_openstack_line(line)
         severity = normalize_openstack_severity(parsed)
         event_type = map_openstack_event_type(parsed)
+        origin, dataset_name = origin_fields_for_path(relative_path)
         metadata = {
             **parsed.to_metadata(),
+            "source_type": "CLOUD",
+            "provider": PROVIDER,
+            "data_origin": origin,
+            "dataset_name": dataset_name,
             "source_file": relative_path,
             "source_file_hash": file_hash,
             "source_line": line_number,
@@ -285,12 +337,13 @@ class OpenStackImportService:
         }
         timestamp = parsed.timestamp or datetime.now(timezone.utc)
         raw_line = parsed.raw_line
+        hostname = "openstack-synthetic-demo" if origin == DEMO_DATA_ORIGIN else (parsed.host or "openstack-public-dataset")
         return {
             "event_id": self._event_id(file_hash, line_number, raw_line),
             "server_id": None,
             "owner_id": owner_id,
             "timestamp": timestamp,
-            "hostname": parsed.host or "openstack-public-dataset",
+            "hostname": hostname,
             "username": parsed.user_id,
             "source_ip": parsed.source_ip,
             "event_type": event_type,
@@ -304,8 +357,8 @@ class OpenStackImportService:
             "process": parsed.process,
             "source_type": "CLOUD",
             "provider": PROVIDER,
-            "data_origin": DATA_ORIGIN,
-            "dataset_name": DATASET_NAME,
+            "data_origin": origin,
+            "dataset_name": dataset_name,
             "is_labelled": label["is_labelled"],
             "original_label": label["original_label"],
             "actor_id": parsed.user_id,
@@ -382,14 +435,7 @@ class OpenStackImportService:
         original_label: str | None = None,
         parser_status: str | None = None,
     ) -> int:
-        clauses = [
-            SecurityEvent.source_type == "CLOUD",
-            SecurityEvent.provider == PROVIDER,
-            SecurityEvent.data_origin == DATA_ORIGIN,
-            SecurityEvent.dataset_name == DATASET_NAME,
-        ]
-        if owner_id:
-            clauses.append(SecurityEvent.owner_id == owner_id)
+        clauses = self._openstack_clauses(owner_id=owner_id)
         if original_label:
             clauses.append(SecurityEvent.original_label == original_label)
         if parser_status:
@@ -397,15 +443,18 @@ class OpenStackImportService:
         return self._session.scalar(select(func.count(SecurityEvent.id)).where(*clauses)) or 0
 
     @staticmethod
-    def _event_distinct_stmt(column: Any, *, owner_id: str | None = None) -> Any:
+    def _openstack_clauses(*, owner_id: str | None = None) -> list[Any]:
         clauses = [
             SecurityEvent.source_type == "CLOUD",
             SecurityEvent.provider == PROVIDER,
-            SecurityEvent.data_origin == DATA_ORIGIN,
-            SecurityEvent.dataset_name == DATASET_NAME,
         ]
         if owner_id:
             clauses.append(SecurityEvent.owner_id == owner_id)
+        return clauses
+
+    @staticmethod
+    def _event_distinct_stmt(column: Any, *, owner_id: str | None = None) -> Any:
+        clauses = OpenStackImportService._openstack_clauses(owner_id=owner_id)
         return select(column).where(*clauses).distinct().order_by(column)
 
     @staticmethod
@@ -422,9 +471,16 @@ class OpenStackImportService:
         return f"openstack-{digest[:24]}"
 
 
+def origin_fields_for_path(relative_path: str) -> tuple[str, str]:
+    lowered = relative_path.replace("\\", "/").lower()
+    if "demo" in lowered or "synthetic" in lowered:
+        return DEMO_DATA_ORIGIN, DEMO_DATASET_NAME
+    return DATA_ORIGIN, DATASET_NAME
+
+
 def _risk_score_for(severity: str, event_type: str) -> int:
     if event_type in {"CLOUD_AUTHORIZATION_FAILURE", "CLOUD_LOGIN_FAILURE", "CLOUD_API_FAILURE"}:
-        return 65
+        return 70
     return {
         "critical": 85,
         "high": 70,

@@ -16,6 +16,8 @@ from backend.core.config import get_settings
 from backend.core.exceptions import ValidationException
 from backend.database import crud
 from backend.database.models import DatasetImport
+from backend.services.behavioral.baseline_service import BehavioralBaselineService
+from backend.services.behavioral.behavior_analysis_service import BehavioralAnalysisService
 from backend.services.behavioral.schemas import (
     DATASET_NAME,
     EVENT_TYPE,
@@ -84,9 +86,9 @@ class BehavioralTelemetryImportService:
                 DatasetImport.source_file_hash == file_hash,
             )
         )
-        if existing and not allow_reimport:
-            raise ValidationException("This behavioral telemetry file was already imported for this user.")
-        run = existing if existing and allow_reimport else DatasetImport()
+        if existing and existing.status in {"COMPLETED", "PARTIAL"} and not allow_reimport:
+            return existing
+        run = existing if existing else DatasetImport()
         run.owner_id = owner_id
         run.dataset_name = DATASET_NAME
         run.dataset_version = "synthetic-v1"
@@ -151,6 +153,62 @@ class BehavioralTelemetryImportService:
         if owner_id:
             stmt = stmt.where(DatasetImport.owner_id == owner_id)
         return self._session.scalar(stmt)
+
+    def import_and_prepare(
+        self,
+        *,
+        file_id: str,
+        owner_id: str,
+        max_records: int | None = None,
+        batch_size: int | None = None,
+        allow_reimport: bool = False,
+        run_pipeline: bool = True,
+    ) -> dict[str, Any]:
+        """Import CSV rows, then optionally build baselines and analyze events."""
+        existing = self._find_completed_import(file_id=file_id, owner_id=owner_id)
+        run = self.import_file(
+            file_id=file_id,
+            owner_id=owner_id,
+            max_records=max_records,
+            batch_size=batch_size,
+            allow_reimport=allow_reimport,
+        )
+        payload = self.import_to_dict(run)
+        payload["already_imported"] = bool(existing) and not allow_reimport
+        if run_pipeline and run.status in {"COMPLETED", "PARTIAL"}:
+            payload.update(self.run_post_import_pipeline(owner_id=owner_id))
+        return payload
+
+    def run_post_import_pipeline(self, *, owner_id: str) -> dict[str, Any]:
+        baseline = BehavioralBaselineService(self._session).build_all(owner_id=owner_id)
+        profiles = baseline.get("profiles") or []
+        analysis = BehavioralAnalysisService(self._session).analyze_all(owner_id=owner_id)
+        return {
+            "profiles_processed": int(baseline.get("profiles_processed") or 0),
+            "profiles_active": sum(1 for profile in profiles if profile.get("status") == "ACTIVE"),
+            "profiles_insufficient": sum(1 for profile in profiles if profile.get("status") == "INSUFFICIENT_DATA"),
+            "events_analyzed": int(analysis.get("events_analyzed") or 0),
+            "events_seen": int(analysis.get("events_seen") or 0),
+            "insufficient_baseline": int(analysis.get("insufficient_baseline") or 0),
+        }
+
+    def _find_completed_import(self, *, file_id: str, owner_id: str) -> DatasetImport | None:
+        try:
+            file_info = self._file_by_id(file_id)
+        except ValidationException:
+            return None
+        path = (self.dataset_dir / file_info["relative_path"]).resolve()
+        if not path.exists():
+            return None
+        file_hash = _sha256_file(path)
+        return self._session.scalar(
+            select(DatasetImport).where(
+                DatasetImport.owner_id == owner_id,
+                DatasetImport.dataset_name == DATASET_NAME,
+                DatasetImport.source_file_hash == file_hash,
+                DatasetImport.status.in_(("COMPLETED", "PARTIAL")),
+            )
+        )
 
     @staticmethod
     def import_to_dict(run: DatasetImport) -> dict[str, Any]:

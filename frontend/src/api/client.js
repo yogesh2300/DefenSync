@@ -67,6 +67,36 @@ export async function getEvents(params = {}) {
   return data
 }
 
+export async function getOpenStackDatasetStatus() {
+  const { data } = await api.get('/api/v1/datasets/openstack/status')
+  return data
+}
+
+export async function getBehavioralSummary() {
+  const { data } = await api.get('/api/v1/behavioral/summary')
+  return data
+}
+
+export async function getBehavioralProfiles() {
+  const { data } = await api.get('/api/v1/behavioral/profiles')
+  return data
+}
+
+export async function getBehavioralAnomalies(limit = 50) {
+  const { data } = await api.get('/api/v1/behavioral/anomalies', { params: { limit } })
+  return data
+}
+
+export async function loadBehavioralDemo() {
+  const { data } = await api.post('/api/v1/behavioral/demo')
+  return data
+}
+
+export async function loadOpenStackDemo() {
+  const { data } = await api.post('/api/v1/datasets/openstack/demo')
+  return data
+}
+
 export async function getHighRiskEvents(limit = 20, serverId = null) {
   const params = { limit }
   if (serverId) params.server_id = serverId

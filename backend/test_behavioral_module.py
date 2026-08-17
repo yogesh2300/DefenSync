@@ -12,7 +12,6 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from backend.core.exceptions import ValidationException
 from backend.database import crud
 from backend.database.models import Base, BehaviorProfile, SecurityEvent
 from backend.services.behavioral.baseline_service import BehavioralBaselineService
@@ -20,7 +19,18 @@ from backend.services.behavioral.behavior_analysis_service import BehavioralAnal
 from backend.services.behavioral.over_efficiency_detector import OverEfficiencyDetector
 from backend.services.behavioral.schemas import DATASET_NAME, REQUIRED_COLUMNS, validate_row
 from backend.services.behavioral.telemetry_import_service import BehavioralTelemetryImportService, file_id_for
-from scripts.generate_behavioral_telemetry import FIELDS, SEED, make_record
+from scripts.generate_behavioral_telemetry import (
+    DEMO_AUTOMATED_COUNT,
+    DEMO_NORMAL_COUNT,
+    DEMO_OVER_EFFICIENCY_COUNT,
+    DEMO_SERVER_ID,
+    DEMO_USER_ID,
+    FIELDS,
+    SEED,
+    build_rows,
+    make_demo_record,
+    make_record,
+)
 
 
 class BehavioralModuleTests(unittest.TestCase):
@@ -71,8 +81,9 @@ class BehavioralModuleTests(unittest.TestCase):
             self.assertEqual(event.source_type, "BEHAVIORAL")
             self.assertEqual(event.data_origin, "SYNTHETIC")
             self.assertNotIn("password", event.raw_log.lower())
-            with self.assertRaises(ValidationException):
-                service.import_file(file_id=file_id, owner_id="owner-1", max_records=1)
+            second = service.import_file(file_id=file_id, owner_id="owner-1", max_records=1)
+            self.assertEqual(second.id, run.id)
+            self.assertEqual(session.query(SecurityEvent).count(), 3)
         finally:
             session.close()
 
@@ -165,6 +176,61 @@ class BehavioralModuleTests(unittest.TestCase):
             self.assertEqual(len(crud.query_events(session, source_type="BEHAVIORAL", dataset_name=DATASET_NAME)), 3)
             summary = BehavioralAnalysisService(session).summary()
             self.assertEqual(summary["total_behavioral_events"], 3)
+        finally:
+            session.close()
+
+    def test_demo_identity_has_enough_normals_on_one_server(self) -> None:
+        rows = build_rows()
+        yogesh = [row for row in rows if row["user_id"] == DEMO_USER_ID]
+        normals = [row for row in yogesh if row["behavior_class"] == "NORMAL"]
+        over = [row for row in yogesh if row["behavior_class"] == "OVER_EFFICIENCY"]
+        auto = [row for row in yogesh if row["behavior_class"] == "AUTOMATED_ACTIVITY"]
+        self.assertEqual(len(normals), DEMO_NORMAL_COUNT)
+        self.assertGreaterEqual(len(normals), 20)
+        self.assertEqual(len(over), DEMO_OVER_EFFICIENCY_COUNT)
+        self.assertEqual(len(auto), DEMO_AUTOMATED_COUNT)
+        self.assertTrue(all(row["server_id"] == DEMO_SERVER_ID for row in yogesh))
+        self.assertTrue(all(row["data_origin"] == "SYNTHETIC" for row in yogesh))
+        self.assertTrue(all(row["linux_username"] == "yogesh" for row in yogesh))
+
+    def test_import_pipeline_activates_yogesh_and_explains_anomalies(self) -> None:
+        rows = []
+        rng = random.Random(SEED)
+        for idx in range(DEMO_NORMAL_COUNT):
+            rows.append(make_demo_record(rng, idx, "NORMAL"))
+        for idx in range(DEMO_NORMAL_COUNT, DEMO_NORMAL_COUNT + DEMO_OVER_EFFICIENCY_COUNT):
+            rows.append(make_demo_record(rng, idx, "OVER_EFFICIENCY"))
+        for idx in range(
+            DEMO_NORMAL_COUNT + DEMO_OVER_EFFICIENCY_COUNT,
+            DEMO_NORMAL_COUNT + DEMO_OVER_EFFICIENCY_COUNT + DEMO_AUTOMATED_COUNT,
+        ):
+            rows.append(make_demo_record(rng, idx, "AUTOMATED_ACTIVITY"))
+        file_id = self.write_rows(rows)
+        session = self.Session()
+        try:
+            service = BehavioralTelemetryImportService(session, dataset_root=self.root)
+            result = service.import_and_prepare(file_id=file_id, owner_id="owner-1")
+            self.assertEqual(result["status"], "COMPLETED")
+            self.assertGreaterEqual(result["profiles_active"], 1)
+            profile = BehavioralBaselineService(session).get_profile(
+                identity_key=DEMO_USER_ID,
+                server_id=DEMO_SERVER_ID,
+                owner_id="owner-1",
+            )
+            self.assertIsNotNone(profile)
+            self.assertEqual(profile.status, "ACTIVE")
+            self.assertGreaterEqual(profile.profile_sample_count, 10)
+            anomalies = BehavioralAnalysisService(session).anomalies(owner_id="owner-1", limit=50)
+            classes = {item["behavioral_classification"] for item in anomalies}
+            self.assertTrue(classes & {"OVER_EFFICIENCY", "AUTOMATED_ACTIVITY"})
+            explained = next(item for item in anomalies if item["behavioral_risk_score"] >= 70)
+            self.assertTrue(explained["reasons"])
+            self.assertTrue(explained["triggered_signals"])
+            self.assertIn("typing_speed_cpm", explained["observed_values"])
+            self.assertIn("average_typing_speed", explained["baseline_values"])
+            second = service.import_and_prepare(file_id=file_id, owner_id="owner-1")
+            self.assertTrue(second["already_imported"])
+            self.assertEqual(session.query(SecurityEvent).count(), len(rows))
         finally:
             session.close()
 

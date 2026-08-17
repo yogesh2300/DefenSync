@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.api.dependencies import get_current_user, get_db, resolve_owner_id
+from backend.core.exceptions import ResourceNotFoundError, ValidationException
 from backend.database.models import User
 from backend.parser.openstack_parser import DATASET_NAME
 from backend.services.datasets.openstack_discovery import OpenStackDiscoveryService
@@ -45,6 +46,9 @@ class DatasetImportResponse(BaseModel):
     error_message: str | None = None
     created_at: datetime
     updated_at: datetime
+    already_imported: bool = False
+    provider: str | None = None
+    data_origin: str | None = None
 
 
 def get_import_service(db: Session = Depends(get_db)) -> OpenStackImportService:
@@ -90,7 +94,32 @@ def import_openstack_file(
         allow_reimport=request.allow_reimport,
         line_offset=request.line_offset,
     )
-    return service.import_to_dict(run)
+    payload = service.import_to_dict(run)
+    selected = next((item for item in OpenStackDiscoveryService().discover_files() if item.file_id == request.file_id), None)
+    if selected:
+        from backend.services.datasets.openstack_import_service import origin_fields_for_path
+        origin, dataset = origin_fields_for_path(selected.relative_path)
+        payload["data_origin"] = origin
+        payload["dataset"] = dataset
+        payload["provider"] = "OPENSTACK"
+    return payload
+
+
+@router.post("/openstack/demo", response_model=DatasetImportResponse, status_code=status.HTTP_201_CREATED)
+def load_openstack_demo(
+    current_user: User = Depends(get_current_user),
+    service: OpenStackImportService = Depends(get_import_service),
+) -> dict[str, Any]:
+    """Generate the synthetic OpenStack demo log if needed, then import it."""
+    from scripts.generate_openstack_demo import OUTPUT, generate
+
+    generate()
+    discovery = OpenStackDiscoveryService()
+    files = discovery.discover_files()
+    target = next((item for item in files if item.filename == OUTPUT.name), None)
+    if target is None:
+        raise ValidationException("OpenStack demo log was not generated.")
+    return service.import_and_prepare(file_id=target.file_id, owner_id=current_user.id)
 
 
 @router.get("/imports", response_model=list[DatasetImportResponse], status_code=status.HTTP_200_OK)

@@ -9,6 +9,7 @@ import Dashboard from './pages/Dashboard'
 import Events from './pages/Events'
 import Alerts from './pages/Alerts'
 import Detection from './pages/Detection'
+import Intelligence from './pages/Intelligence'
 import Collection from './pages/Collection'
 import Servers from './pages/Servers'
 import ServerDetails from './pages/ServerDetails'
@@ -101,6 +102,7 @@ function AppRoutes() {
         <Route path="events" element={<AnalystRoute><Events /></AnalystRoute>} />
         <Route path="alerts" element={<AnalystRoute><Alerts /></AnalystRoute>} />
         <Route path="detection" element={<AnalystRoute><Detection /></AnalystRoute>} />
+        <Route path="intelligence" element={<AnalystRoute><Intelligence /></AnalystRoute>} />
         <Route path="servers/new" element={<AnalystRoute><Servers /></AnalystRoute>} />
         <Route path="servers" element={<AnalystRoute><Servers /></AnalystRoute>} />
         <Route path="servers/:serverId/edit" element={<AnalystRoute><EditServer /></AnalystRoute>} />

@@ -255,7 +255,14 @@ def _enrich(parsed: OpenStackParsedLog) -> None:
 
     block = _BRACKET_BLOCK.search(parsed.raw_line)
     if block:
-        parsed.metadata["context_block"] = block.group("body")
+        body = block.group("body")
+        parsed.metadata["context_block"] = body
+        tokens = body.split()
+        if tokens and tokens[0].startswith("req-"):
+            if len(tokens) > 1 and not parsed.user_id:
+                parsed.user_id = tokens[1]
+            if len(tokens) > 2 and not parsed.tenant_id:
+                parsed.tenant_id = tokens[2]
 
 
 def _operation_from_message(message: str) -> str | None:

@@ -1,6 +1,6 @@
 # DefenSync Behavioral Telemetry Dataset
 
-This dataset is synthetic and generated with a deterministic random seed. It is designed only for prototype validation of aggregate behavioral baselines.
+This dataset is synthetic and generated with a deterministic random seed. It is designed only for prototype validation of aggregate behavioral baselines. These values are NOT live Linux keystroke or session telemetry.
 
 Privacy notes:
 - No keystrokes are collected or stored.
@@ -8,3 +8,4 @@ Privacy notes:
 - Only aggregate timing and statistical measurements are included.
 
 Class counts: {'NORMAL': 800, 'OVER_EFFICIENCY': 80, 'AUTOMATED_ACTIVITY': 60, 'UNUSUAL_SESSION': 30, 'SUSPICIOUS_BEHAVIOR': 30}
+Demo identity: yogesh on server-demo (NORMAL=25, OVER_EFFICIENCY=6, AUTOMATED_ACTIVITY=4)

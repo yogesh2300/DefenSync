@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.api.dependencies import get_current_user, get_db, resolve_owner_id
-from backend.core.exceptions import ResourceNotFoundError
+from backend.core.exceptions import ResourceNotFoundError, ValidationException
 from backend.database.models import User
 from backend.services.behavioral.baseline_service import BehavioralBaselineService, profile_to_dict
 from backend.services.behavioral.behavior_analysis_service import BehavioralAnalysisService
@@ -24,6 +24,7 @@ class BehavioralImportRequest(BaseModel):
     max_records: int | None = Field(None, ge=1)
     batch_size: int | None = Field(None, ge=1)
     allow_reimport: bool = False
+    run_pipeline: bool = True
 
 
 class BehavioralImportResponse(BaseModel):
@@ -38,6 +39,13 @@ class BehavioralImportResponse(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     error_message: str | None = None
+    already_imported: bool = False
+    profiles_processed: int | None = None
+    profiles_active: int | None = None
+    profiles_insufficient: int | None = None
+    events_analyzed: int | None = None
+    events_seen: int | None = None
+    insufficient_baseline: int | None = None
 
 
 @router.get("/files", status_code=status.HTTP_200_OK)
@@ -53,14 +61,35 @@ def import_behavioral_telemetry(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     service = BehavioralTelemetryImportService(db)
-    run = service.import_file(
+    return service.import_and_prepare(
         file_id=request.file_id,
         owner_id=current_user.id,
         max_records=request.max_records,
         batch_size=request.batch_size,
         allow_reimport=request.allow_reimport,
+        run_pipeline=request.run_pipeline,
     )
-    return service.import_to_dict(run)
+
+
+@router.post("/demo", response_model=BehavioralImportResponse, status_code=status.HTTP_201_CREATED)
+def load_behavioral_demo(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Generate the synthetic CSV if needed, then import, baseline, and analyze."""
+    from scripts.generate_behavioral_telemetry import OUTPUT, generate
+
+    generate()
+    service = BehavioralTelemetryImportService(db)
+    files = service.discover_files()
+    target = next((item for item in files if item["filename"] == OUTPUT.name), files[0] if files else None)
+    if target is None:
+        raise ValidationException("Behavioral telemetry CSV was not generated.")
+    return service.import_and_prepare(
+        file_id=target["file_id"],
+        owner_id=current_user.id,
+        run_pipeline=True,
+    )
 
 
 @router.get("/imports", response_model=list[BehavioralImportResponse], status_code=status.HTTP_200_OK)

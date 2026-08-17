@@ -159,6 +159,17 @@ def _risk_level(score: int) -> str:
 
 
 def _event_summary(event: SecurityEvent) -> dict[str, Any]:
+    analysis: dict[str, Any] = {}
+    try:
+        analysis = json.loads(event.normalized_data or "{}").get("behavioral_analysis", {}) or {}
+    except Exception:
+        analysis = {}
+    try:
+        reasons = json.loads(event.risk_reasons or "[]")
+    except Exception:
+        reasons = []
+    if not isinstance(reasons, list):
+        reasons = [str(reasons)]
     return {
         "event_id": event.event_id,
         "actor_id": event.actor_id,
@@ -166,7 +177,16 @@ def _event_summary(event: SecurityEvent) -> dict[str, Any]:
         "server_id": event.server_id,
         "session_id": event.session_id,
         "timestamp": event.timestamp,
+        "source_type": event.source_type,
+        "data_origin": event.data_origin,
         "behavioral_risk_score": event.behavioral_risk_score,
+        "risk_score": event.behavioral_risk_score,
         "behavioral_classification": event.behavioral_classification,
-        "risk_reasons": json.loads(event.risk_reasons or "[]"),
+        "anomaly_type": event.behavioral_classification,
+        "triggered_signals": analysis.get("triggered_signals", []),
+        "observed_values": analysis.get("observed_values", {}),
+        "baseline_values": analysis.get("baseline_values", {}),
+        "deviations": analysis.get("deviations", {}),
+        "risk_reasons": reasons,
+        "reasons": reasons or analysis.get("reasons", []),
     }
