@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Tooltip, XAxis, YAxis, ResponsiveContainer,
 } from 'recharts'
-import {
-  Activity, AlertTriangle, BrainCircuit, Cloud, RefreshCw,
-  Server, ShieldAlert, TerminalSquare, UserRoundSearch,
-} from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 import {
   getAlerts,
   getBehavioralAnomalies,
@@ -22,9 +19,9 @@ import AlertBanner from '../components/ui/AlertBanner'
 import Badge, { SeverityBadge } from '../components/ui/Badge'
 import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
-import PageHeader from '../components/ui/PageHeader'
 import RiskWidget from '../components/ui/RiskWidget'
 import { Select } from '../components/ui/Input'
+import './Intelligence.css'
 
 const TOOLTIP = {
   contentStyle: {
@@ -34,12 +31,6 @@ const TOOLTIP = {
     color: 'var(--text-main)',
     fontSize: 12,
   },
-}
-
-const SOURCE_COLORS = {
-  Linux: '#737373',
-  OpenStack: '#B89B5E',
-  Behavioral: '#6EA779',
 }
 
 const FILTERS = ['All', 'Linux', 'OpenStack', 'Behavioral', 'Normal', 'Anomalous', 'High Risk', 'Critical']
@@ -86,15 +77,58 @@ function eventId(event, index = 0) {
   return event?.event_id || event?.id || `${sourceOf(event)}-${eventTime(event)}-${index}`
 }
 
+function originOf(event) {
+  return event?.data_origin || 'LIVE_LINUX'
+}
+
 function sourceBadge(event) {
   const source = sourceOf(event)
-  const origin = (event?.data_origin || '').toUpperCase()
-  if (source === 'OpenStack') {
-    if (origin.includes('SYNTHETIC')) return <Badge variant="medium">SYNTHETIC OPENSTACK DEMO</Badge>
-    return <Badge variant="medium">OPENSTACK DATASET</Badge>
-  }
-  if (source === 'Behavioral') return <Badge variant="normal">BEHAVIORAL / SYNTHETIC</Badge>
-  return <Badge variant="info">LINUX / LIVE</Badge>
+  const variant = source === 'OpenStack' ? 'medium' : source === 'Behavioral' ? 'normal' : 'info'
+  return (
+    <span title={originOf(event)}>
+      <Badge variant={variant}>{source}</Badge>
+    </span>
+  )
+}
+
+function postureLevel(score) {
+  if (score >= 85) return { label: 'Critical', variant: 'critical' }
+  if (score >= 70) return { label: 'High', variant: 'high' }
+  if (score >= 50) return { label: 'Medium', variant: 'medium' }
+  if (score > 0) return { label: 'Low', variant: 'low' }
+  return { label: 'Informational', variant: 'info' }
+}
+
+function CountUp({ value, className }) {
+  const target = Number(value) || 0
+  const [shown, setShown] = useState(target)
+  useEffect(() => {
+    const reduce = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduce) {
+      setShown(target)
+      return undefined
+    }
+    let frame
+    let origin = shown
+    const startAt = performance.now()
+    const tick = (now) => {
+      const progress = Math.min(1, (now - startAt) / 800)
+      setShown(Math.round(origin + (target - origin) * progress))
+      if (progress < 1) frame = requestAnimationFrame(tick)
+    }
+    frame = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(frame)
+  }, [target])
+  return <span className={className}>{shown}</span>
+}
+
+function StatusDot({ active }) {
+  return (
+    <span
+      className={`inline-flex h-2 w-2 rounded-full ${active ? 'bg-[#6EA779] intel-pulse-dot' : 'bg-[#C9CCC7]'}`}
+      aria-hidden="true"
+    />
+  )
 }
 
 function severityScore(event) {
@@ -202,30 +236,225 @@ function relatedEventsFor(event, events) {
     .slice(0, 20)
 }
 
-function MetricCard({ label, value, caption, icon: Icon }) {
-  return (
-    <Card className="min-h-[132px]">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wide muted-text">{label}</p>
-          <p className="mt-3 text-3xl font-bold cyber-text">{value ?? 0}</p>
-          {caption && <p className="mt-2 text-xs muted-text">{caption}</p>}
-        </div>
-        {Icon && (
-          <div className="rounded-2xl bg-[var(--panel-strong)] p-3">
-            <Icon className="h-5 w-5 text-[#6F746F]" />
-          </div>
-        )}
-      </div>
-    </Card>
-  )
-}
-
 function MiniRow({ label, value }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-2xl border border-[var(--panel-border)] bg-[var(--panel-strong)] px-3 py-2">
       <span className="text-xs muted-text">{label}</span>
       <span className="text-sm font-semibold cyber-text">{value ?? '-'}</span>
+    </div>
+  )
+}
+
+function SecurityPosture({ score, incidents, linuxActive, cloudActive, behaviorActive }) {
+  const level = postureLevel(score)
+  const radius = 54
+  const circ = 2 * Math.PI * radius
+  const offset = circ - (Math.min(100, Math.max(0, score)) / 100) * circ
+  return (
+    <Card className="intel-enter h-full">
+      <p className="text-[11px] font-semibold uppercase tracking-wide muted-text">Security Posture</p>
+      <div className="mt-3 flex flex-col items-center gap-3 sm:flex-row sm:items-center sm:gap-6">
+        <div className="relative h-[140px] w-[140px] shrink-0">
+          <svg width="140" height="140" className="intel-ring" aria-hidden="true">
+            <circle cx="70" cy="70" r={radius} fill="none" stroke="var(--panel-border)" strokeWidth="10" />
+            <circle
+              cx="70"
+              cy="70"
+              r={radius}
+              fill="none"
+              stroke="#111111"
+              strokeWidth="10"
+              strokeLinecap="round"
+              strokeDasharray={circ}
+              strokeDashoffset={offset}
+              className="intel-ring-progress"
+            />
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <CountUp value={score} className="text-4xl font-bold tabular-nums cyber-text" />
+            <Badge variant={level.variant}>{level.label}</Badge>
+          </div>
+        </div>
+        <div className="w-full space-y-2">
+          <MiniRow label="Correlated incidents" value={incidents} />
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-2xl border border-[var(--panel-border)] bg-[var(--panel-strong)] px-2 py-2">
+              <div className="flex items-center justify-center gap-1 text-[11px] muted-text"><StatusDot active={linuxActive} /> Linux</div>
+              <p className="mt-1 text-xs font-semibold cyber-text">{linuxActive ? 'Available' : 'None loaded'}</p>
+            </div>
+            <div className="rounded-2xl border border-[var(--panel-border)] bg-[var(--panel-strong)] px-2 py-2">
+              <div className="flex items-center justify-center gap-1 text-[11px] muted-text"><StatusDot active={cloudActive} /> OpenStack</div>
+              <p className="mt-1 text-xs font-semibold cyber-text">{cloudActive ? 'Available' : 'None loaded'}</p>
+            </div>
+            <div className="rounded-2xl border border-[var(--panel-border)] bg-[var(--panel-strong)] px-2 py-2">
+              <div className="flex items-center justify-center gap-1 text-[11px] muted-text"><StatusDot active={behaviorActive} /> Behavior</div>
+              <p className="mt-1 text-xs font-semibold cyber-text">{behaviorActive ? 'Available' : 'None loaded'}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+function IntelligenceFlow({ linuxCount, cloudCount, behaviorCount, risk }) {
+  return (
+    <Card className="intel-enter intel-enter-delay-1 h-full">
+      <p className="text-[11px] font-semibold uppercase tracking-wide muted-text">Intelligence Flow</p>
+      <p className="mt-1 text-sm muted-text">Evidence sources feed correlation, then risk.</p>
+      <div className="mt-4 space-y-3">
+        {[
+          ['Linux', linuxCount],
+          ['OpenStack', cloudCount],
+          ['Behavior', behaviorCount],
+        ].map(([label, count], index) => (
+          <div key={label} className="flex items-center gap-3">
+            <div className="w-24 shrink-0 text-sm font-semibold cyber-text">{label}</div>
+            <div className="intel-flow-track flex-1">
+              <span className={`intel-flow-dot delay-${index}`} />
+            </div>
+            <span className="w-16 text-right text-xs tabular-nums muted-text">{count}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-[var(--mint)] px-4 py-3">
+        <span className="text-sm font-semibold cyber-text">Correlation engine</span>
+        <span className="text-xs muted-text">→ Risk <strong className="cyber-text">{risk}</strong></span>
+      </div>
+    </Card>
+  )
+}
+
+function ActiveInvestigation({ incident, recommendation, classification }) {
+  if (!incident) {
+    return (
+      <Card className="intel-enter intel-enter-delay-2 h-full">
+        <p className="text-[11px] font-semibold uppercase tracking-wide muted-text">Active Investigation</p>
+        <p className="mt-4 text-sm muted-text">No multi-evidence correlation is available in the currently loaded records.</p>
+      </Card>
+    )
+  }
+  const steps = [
+    incident.sources.includes('OpenStack') && 'OpenStack activity',
+    incident.sources.includes('Behavioral') && 'Behavioral deviation',
+    classification && classification !== 'NORMAL' ? String(classification).replace(/_/g, ' ') : null,
+    incident.evidence.find((item) => /high-risk/i.test(item)),
+    recommendation?.level ? `${recommendation.level} recommendation` : 'Analyst recommendation',
+  ].filter(Boolean)
+  return (
+    <Card className="intel-enter intel-enter-delay-2 h-full">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide muted-text">Active Investigation</p>
+          <h2 className="mt-1 text-2xl font-bold tracking-tight cyber-text">{incident.actor}</h2>
+          <p className="mt-1 text-sm muted-text">Cross-source evidence · {incident.sources.join(' → ')}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-3xl font-bold tabular-nums cyber-text">{incident.score}</p>
+          <p className="text-xs muted-text">{incident.confidence}% confidence</p>
+        </div>
+      </div>
+      <div className="mt-4 space-y-2">
+        {steps.map((step, index) => (
+          <div key={`${step}-${index}`} className="flex gap-3">
+            <div className="flex w-4 flex-col items-center">
+              <span className="mt-1 h-2.5 w-2.5 rounded-full bg-[#111111]" />
+              {index < steps.length - 1 && <span className="mt-1 w-px flex-1 bg-[var(--panel-border)]" />}
+            </div>
+            <p className="pb-3 text-sm cyber-text">{step}</p>
+          </div>
+        ))}
+      </div>
+      <div className="mt-1 flex flex-wrap gap-2">
+        {incident.evidence.map((item) => <Badge key={item} variant="info">{item}</Badge>)}
+      </div>
+      <p className="mt-4 text-sm muted-text">{recommendation?.action}</p>
+    </Card>
+  )
+}
+
+function EvidenceTimeline({ events, recommendation }) {
+  const items = (events || []).slice(0, 8)
+  return (
+    <div className="mt-4 max-h-80 overflow-auto pr-1">
+      <p className="text-xs font-semibold uppercase tracking-wide muted-text">Evidence timeline</p>
+      <div className="mt-3">
+        {items.map((event, index) => (
+          <div key={eventId(event, index)} className="intel-timeline-item flex gap-3" style={{ animationDelay: `${index * 60}ms` }}>
+            <div className="flex w-4 flex-col items-center">
+              <span className="mt-1 h-2.5 w-2.5 rounded-full bg-[#6EA779]" />
+              <span className="mt-1 w-px flex-1 bg-[var(--panel-border)]" />
+            </div>
+            <div className="pb-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-[11px] muted-text">{event.timestamp ? new Date(event.timestamp).toLocaleString() : '-'}</span>
+                {sourceBadge(event)}
+                <SeverityBadge severity={event.severity || 'info'} />
+              </div>
+              <p className="mt-1 text-sm font-semibold cyber-text">{event.event_type || 'Event'}</p>
+              <p className="line-clamp-2 text-xs muted-text">{event.message || event.raw_log}</p>
+              <p className="mt-1 text-[11px] muted-text">{originOf(event)}</p>
+            </div>
+          </div>
+        ))}
+        {recommendation && (
+          <div className="intel-timeline-item flex gap-3" style={{ animationDelay: `${items.length * 60}ms` }}>
+            <div className="flex w-4 flex-col items-center">
+              <span className="mt-1 h-2.5 w-2.5 rounded-full bg-[#111111]" />
+            </div>
+            <div className="pb-1">
+              <p className="text-xs font-semibold uppercase tracking-wide muted-text">Recommendation</p>
+              <p className="mt-1 text-sm font-semibold cyber-text">{recommendation.level}</p>
+              <p className="text-xs muted-text">{recommendation.action}</p>
+            </div>
+          </div>
+        )}
+        {!items.length && <p className="text-sm muted-text">Select a record to inspect related evidence.</p>}
+      </div>
+    </div>
+  )
+}
+
+function SourceCards({ linuxCount, cloudCount, behaviorCount, profileStatus }) {
+  const cards = [
+    { name: 'Linux', count: linuxCount, status: linuxCount > 0 ? 'Available' : 'None loaded' },
+    { name: 'OpenStack', count: cloudCount, status: cloudCount > 0 ? 'Available' : 'None loaded' },
+    { name: 'Behavior', count: behaviorCount, status: profileStatus ? `Profile ${profileStatus}` : (behaviorCount > 0 ? 'Available' : 'None loaded') },
+  ]
+  return (
+    <div className="grid gap-3 md:grid-cols-3">
+      {cards.map((card, index) => (
+        <div key={card.name} className={`intel-source-card intel-enter intel-enter-delay-${index + 1} rounded-3xl border border-[var(--panel-border)] bg-[var(--panel)] p-4`}>
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold cyber-text">{card.name}</p>
+            <StatusDot active={card.count > 0} />
+          </div>
+          <p className="mt-2 text-2xl font-bold tabular-nums cyber-text"><CountUp value={card.count} /></p>
+          <p className="mt-1 text-xs muted-text">{card.status}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function OperationalSnapshot({ overview }) {
+  const items = [
+    ['Linux', overview.linuxEvents],
+    ['Cloud', overview.cloudEvents],
+    ['Behavioral', overview.behavioralEvents],
+    ['High risk', overview.highRiskEvents],
+    ['Users', overview.activeUsers],
+    ['Servers', overview.servers],
+    ['Profiles', overview.behaviorProfiles],
+  ]
+  return (
+    <div className="intel-enter intel-enter-delay-3 grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-7">
+      {items.map(([label, value]) => (
+        <div key={label} className="rounded-2xl border border-[var(--panel-border)] bg-[var(--panel-strong)] px-3 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide muted-text">{label}</p>
+          <p className="mt-1 text-lg font-bold tabular-nums cyber-text">{value ?? 0}</p>
+        </div>
+      ))}
     </div>
   )
 }
@@ -426,6 +655,11 @@ export default function Intelligence() {
   }, [cloudEvents, selectedBehaviorEvent, selectedCorrelation])
 
   const recommendation = recommendationFor(riskBreakdown.overall, selectedCorrelation?.evidence || [])
+  const leadIncident = correlations[0] || null
+  const investigationRecommendation = recommendationFor(leadIncident?.score || 0, leadIncident?.evidence || [])
+  const linuxActive = sourceCounts.Linux > 0
+  const cloudActive = sourceCounts.OpenStack > 0 || (openStackStatus?.summary?.total_openstack_events || 0) > 0
+  const behaviorActive = sourceCounts.Behavioral > 0 || profiles.length > 0
 
   const trend = useMemo(() => {
     const buckets = new Map()
@@ -444,31 +678,47 @@ export default function Intelligence() {
     }))
   }, [events])
 
-  const distribution = Object.entries(sourceCounts).map(([name, value]) => ({ name, value }))
-
   return (
     <div className="page-shell">
-      <PageHeader
-        title="DefenSync : Intelligent Cloud Security Monitoring System"
-        subtitle="Security Intelligence Center powered by existing Linux, OpenStack, behavioral, risk, and alert data."
-        actions={(
-          <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" onClick={handleLoadDemo} disabled={demoLoading || cloudDemoLoading || loading}>
+      <header className="intel-enter flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] muted-text">DefenSync Intelligence</p>
+          <h1 className="mt-1 text-3xl font-bold tracking-tight cyber-text">Hybrid Behavioral Threat Intelligence</h1>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {[
+              ['Linux', linuxActive],
+              ['OpenStack', cloudActive],
+              ['Behavioral', behaviorActive],
+              ['ML Analysis', true],
+            ].map(([label, active]) => (
+              <span key={label} className="inline-flex items-center gap-2 rounded-full border border-[var(--panel-border)] bg-white px-3 py-1 text-xs font-semibold cyber-text">
+                <StatusDot active={active} />
+                {label}
+              </span>
+            ))}
+          </div>
+          <p className="mt-3 text-sm muted-text">Monitoring multiple security evidence sources — activity, behavior, correlation, risk, and recommendation.</p>
+        </div>
+        <details className="rounded-3xl border border-[var(--panel-border)] bg-[var(--panel)] px-4 py-3 xl:min-w-[280px]">
+          <summary className="cursor-pointer text-sm font-semibold cyber-text">Data sources / actions</summary>
+          <div className="mt-3 space-y-2">
+            <Button variant="secondary" className="w-full" onClick={handleLoadDemo} disabled={demoLoading || cloudDemoLoading || loading}>
               {demoLoading ? 'Loading demo...' : 'Load Behavioral Demo Data'}
             </Button>
-            <Button variant="secondary" onClick={handleLoadOpenStackDemo} disabled={demoLoading || cloudDemoLoading || loading}>
+            <Button variant="secondary" className="w-full" onClick={handleLoadOpenStackDemo} disabled={demoLoading || cloudDemoLoading || loading}>
               {cloudDemoLoading ? 'Loading OpenStack...' : 'Load OpenStack Demo Data'}
             </Button>
-            <Button onClick={load} disabled={loading || demoLoading || cloudDemoLoading}><RefreshCw className="h-4 w-4" /> Refresh</Button>
+            <Button className="w-full" onClick={load} disabled={loading || demoLoading || cloudDemoLoading}><RefreshCw className="h-4 w-4" /> Refresh</Button>
+            <p className="text-[11px] leading-5 muted-text">
+              Behavioral metrics are generated research telemetry, not live keystroke capture.
+              OpenStack records use imported or demonstration origin metadata. Azure is not used.
+            </p>
           </div>
-        )}
-      />
+        </details>
+      </header>
 
-      <AlertBanner type="info" message="SYNTHETIC BEHAVIORAL DATA — typing speed, command rate, idle time and related metrics are generated for research demonstration. They are not live Linux keystroke telemetry." />
-      <AlertBanner type="info" message="OpenStack records are public-dataset imports or a SYNTHETIC OPENSTACK DEMO sample. Azure is not used." />
       {demoMessage && <AlertBanner type="success" message={demoMessage} />}
       {demoError && <AlertBanner type="error" message={demoError} />}
-
       {errors.length > 0 && (
         <div className="space-y-2">
           {errors.map((error) => <AlertBanner key={error} type="warning" message={error} />)}
@@ -478,7 +728,35 @@ export default function Intelligence() {
 
       {!loading && (
         <>
-          <SystemOverview overview={overview} distribution={distribution} />
+          <section className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+            <SecurityPosture
+              score={riskBreakdown.overall}
+              incidents={correlations.length}
+              linuxActive={linuxActive}
+              cloudActive={cloudActive}
+              behaviorActive={behaviorActive}
+            />
+            <IntelligenceFlow
+              linuxCount={overview.linuxEvents}
+              cloudCount={overview.cloudEvents}
+              behaviorCount={overview.behavioralEvents}
+              risk={riskBreakdown.overall}
+            />
+            <ActiveInvestigation
+              incident={leadIncident}
+              recommendation={investigationRecommendation}
+              classification={leadIncident ? (events.filter((event) => actorOf(event) === leadIncident.actor && sourceOf(event) === 'Behavioral').sort((a, b) => riskOf(b) - riskOf(a))[0]?.behavioral_classification) : null}
+            />
+          </section>
+
+          <OperationalSnapshot overview={overview} />
+          <SourceCards
+            linuxCount={overview.linuxEvents}
+            cloudCount={overview.cloudEvents}
+            behaviorCount={overview.behavioralEvents}
+            profileStatus={selectedProfile?.status}
+          />
+
           <UnifiedEventStream events={filteredEvents} filter={filter} setFilter={setFilter} onSelect={setSelectedEventId} selectedEvent={selectedEvent} />
           <section className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
             <BehavioralAnalytics
@@ -513,90 +791,51 @@ export default function Intelligence() {
   )
 }
 
-function SystemOverview({ overview, distribution }) {
-  return (
-    <section className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <MetricCard label="Linux Events" value={overview.linuxEvents} caption="Existing Linux event records" icon={TerminalSquare} />
-        <MetricCard label="Cloud Events" value={overview.cloudEvents} caption="OPENSTACK · SYNTHETIC DEMO or public dataset" icon={Cloud} />
-        <MetricCard label="Behavioral Events" value={overview.behavioralEvents} caption="SYNTHETIC BEHAVIORAL DATA" icon={UserRoundSearch} />
-        <MetricCard label="High Risk Events" value={overview.highRiskEvents} caption="Risk score 70+" icon={ShieldAlert} />
-        <MetricCard label="Critical Events" value={overview.criticalEvents} caption="Risk score 85+ or critical severity" icon={AlertTriangle} />
-        <MetricCard label="Active Users" value={overview.activeUsers} caption="Distinct actors in loaded records" icon={Activity} />
-        <MetricCard label="Servers" value={overview.servers} caption="Registered or observed servers" icon={Server} />
-        <MetricCard label="Behavior Profiles" value={overview.behaviorProfiles} caption="Learned behavioral baselines" icon={BrainCircuit} />
-      </div>
-      <Card title="Source Distribution" subtitle="Loaded records by telemetry source">
-        <div className="grid gap-4 xl:grid-cols-[260px_1fr]">
-          <div className="h-56">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={distribution} dataKey="value" innerRadius={52} outerRadius={86} paddingAngle={4}>
-                  {distribution.map((entry) => <Cell key={entry.name} fill={SOURCE_COLORS[entry.name]} />)}
-                </Pie>
-                <Tooltip {...TOOLTIP} />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="grid content-center gap-2 md:grid-cols-3">
-            {distribution.map((item) => (
-              <MiniRow key={item.name} label={item.name} value={item.value} />
-            ))}
-          </div>
-        </div>
-      </Card>
-    </section>
-  )
-}
-
 function UnifiedEventStream({ events, filter, setFilter, onSelect, selectedEvent }) {
   return (
-    <Card title="Unified Event Stream" subtitle="Merged Linux, OpenStack and Behavioral records from existing Events APIs">
-      <div className="mb-4 flex flex-wrap gap-2">
-        {FILTERS.map((item) => (
-          <button
-            key={item}
-            type="button"
-            onClick={() => setFilter(item)}
-            className={`rounded-full px-3 py-1.5 text-xs font-semibold ${filter === item ? 'bg-[#111111] text-white' : 'border border-[var(--panel-border)] bg-white muted-text'}`}
-          >
-            {item}
-          </button>
-        ))}
+    <Card title="Live activity" subtitle="Existing event records from Linux, OpenStack and Behavioral sources">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-2">
+          {FILTERS.map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setFilter(item)}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold ${filter === item ? 'bg-[#111111] text-white' : 'border border-[var(--panel-border)] bg-white muted-text'}`}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+        <span className="inline-flex items-center gap-2 text-xs font-semibold cyber-text">
+          <StatusDot active />
+          Active
+        </span>
       </div>
-      <div className="max-h-[520px] overflow-auto rounded-3xl border border-[var(--panel-border)]">
-        <table className="min-w-[1040px] w-full text-left text-sm">
-          <thead className="sticky top-0 z-10 bg-[var(--panel-strong)] text-xs uppercase tracking-wide muted-text">
-            <tr>
-              {['Time', 'Source', 'Actor', 'Event Type', 'Resource / Server', 'Severity', 'Label', 'Risk', 'Origin'].map((heading) => (
-                <th key={heading} className="px-4 py-3">{heading}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {events.map((event, index) => {
-              const id = eventId(event, index)
-              const active = eventId(selectedEvent) === id
-              return (
-                <tr
-                  key={id}
-                  onClick={() => onSelect(id)}
-                  className={`cursor-pointer border-t border-[var(--panel-border)] ${active ? 'bg-[#D8ECE6]' : 'bg-[var(--panel)] hover:bg-[var(--panel-strong)]'}`}
-                >
-                  <td className="px-4 py-3 font-mono text-xs">{event.timestamp ? new Date(event.timestamp).toLocaleString() : '-'}</td>
-                  <td className="px-4 py-3">{sourceBadge(event)}</td>
-                  <td className="px-4 py-3">{actorOf(event)}</td>
-                  <td className="px-4 py-3">{event.event_type || '-'}</td>
-                  <td className="px-4 py-3">{event.resource_id || event.server_id || event.hostname || '-'}</td>
-                  <td className="px-4 py-3"><SeverityBadge severity={event.severity || 'info'} /></td>
-                  <td className="px-4 py-3">{labelOf(event)}</td>
-                  <td className="px-4 py-3 font-semibold">{riskOf(event)}</td>
-                  <td className="px-4 py-3">{event.data_origin || 'LIVE_LINUX'}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+      <div className="max-h-[420px] overflow-auto rounded-3xl border border-[var(--panel-border)]">
+        {events.map((event, index) => {
+          const id = eventId(event, index)
+          const active = eventId(selectedEvent) === id
+          const time = event.timestamp ? new Date(event.timestamp) : null
+          const timeLabel = time && !Number.isNaN(time.getTime())
+            ? time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : '-'
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => onSelect(id)}
+              className={`intel-feed-row flex w-full items-center gap-3 border-t border-[var(--panel-border)] px-4 py-2.5 text-left ${active ? 'bg-[#D8ECE6]' : 'bg-[var(--panel)] hover:bg-[var(--panel-strong)]'}`}
+            >
+              <span className="w-12 shrink-0 font-mono text-[11px] muted-text">{timeLabel}</span>
+              <span className="w-[108px] shrink-0">{sourceBadge(event)}</span>
+              <span className="min-w-0 flex-1 truncate text-sm font-semibold cyber-text">{event.event_type || '-'}</span>
+              <span className="hidden min-w-0 max-w-[140px] truncate text-xs muted-text md:block">{actorOf(event)}</span>
+              <SeverityBadge severity={event.severity || 'info'} />
+              <span className="w-8 text-right text-xs font-semibold tabular-nums cyber-text">{riskOf(event)}</span>
+            </button>
+          )
+        })}
       </div>
     </Card>
   )
@@ -635,7 +874,7 @@ function BehavioralAnalytics({ profiles, selectedIdentity, setSelectedIdentity, 
       <div className="mb-4 grid gap-2 md:grid-cols-3">
         <MiniRow label="Baseline status" value={selectedProfile?.status || 'No profile'} />
         <MiniRow label="Baseline samples" value={selectedProfile?.profile_sample_count ?? 0} />
-        <MiniRow label="Origin" value="SYNTHETIC BEHAVIORAL DATA" />
+        <MiniRow label="Origin" value={selectedBehaviorEvent?.data_origin || selectedProfile?.data_origin || 'research telemetry'} />
       </div>
       <div className="mb-4 grid gap-3 md:grid-cols-2">
         <div className="rounded-3xl border border-[var(--panel-border)] bg-[var(--panel-strong)] p-4">
@@ -684,7 +923,7 @@ function CloudActivity({ cloudEvents, openStackStatus }) {
   const highRiskExample = [...cloudEvents].sort((a, b) => riskOf(b) - riskOf(a)).find((event) => riskOf(event) >= 65 || ['high', 'critical'].includes((event.severity || '').toLowerCase()))
   const origin = cloudEvents[0]?.data_origin || openStackStatus?.summary?.most_recent_import?.dataset_version || 'OPENSTACK'
   return (
-    <Card title="Cloud Activity" subtitle="OpenStack only. SYNTHETIC OPENSTACK DEMO or public dataset — no Azure events">
+    <Card title="Cloud Activity" subtitle="OpenStack only. Origin metadata is shown per record. Azure is not used.">
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <MiniRow label="Authentication" value={auth} />
         <MiniRow label="VM Activity" value={vm} />
@@ -757,20 +996,7 @@ function ThreatInvestigation({ selectedEvent, relatedEvents, selectedCorrelation
           {!selectedCorrelation?.evidence?.length && <span className="text-sm muted-text">No correlated evidence found for this actor yet.</span>}
         </div>
       </div>
-      <div className="mt-4 max-h-80 overflow-auto space-y-2">
-        <p className="text-xs font-semibold uppercase tracking-wide muted-text">Timeline and Related Events</p>
-        {relatedEvents.map((event, index) => (
-          <div key={eventId(event, index)} className="rounded-2xl border border-[var(--panel-border)] bg-[var(--panel-strong)] p-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-mono text-xs muted-text">{event.timestamp ? new Date(event.timestamp).toLocaleString() : '-'}</span>
-              {sourceBadge(event)}
-              <SeverityBadge severity={event.severity || 'info'} />
-            </div>
-            <p className="mt-2 text-sm font-semibold cyber-text">{event.event_type || 'Event'}</p>
-            <p className="line-clamp-2 text-sm muted-text">{event.message || event.raw_log}</p>
-          </div>
-        ))}
-      </div>
+      <EvidenceTimeline events={relatedEvents} recommendation={recommendation} />
       <div className="mt-4 grid gap-2 md:grid-cols-2">
         <MiniRow label="Behavior" value={selectedBehaviorEvent?.behavioral_classification || 'No linked behavior record'} />
         <MiniRow label="Cloud Activity" value={(selectedCorrelation?.sources || []).includes('OpenStack') ? 'Related OpenStack evidence' : 'No linked OpenStack evidence'} />
