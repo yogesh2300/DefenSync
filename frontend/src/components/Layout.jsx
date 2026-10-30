@@ -1,24 +1,64 @@
 import { useEffect, useMemo, useState } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Activity, Bell, BrainCircuit, ChevronLeft, ChevronRight, DatabaseZap,
-  LayoutDashboard, LogOut, Menu, Search, Server, ShieldCheck, TerminalSquare,
+  Activity, Bell, ChevronLeft, ChevronRight, Cloud, DatabaseZap, Fingerprint,
+  LayoutDashboard, LogOut, Menu, Search, Server, Shield, ShieldCheck, TerminalSquare,
   TriangleAlert, Network,
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { useAuth } from '../context/AuthContext'
+import { useEnvironment } from '../context/EnvironmentContext'
 import { useSelectedServer } from '../context/SelectedServerContext'
+import {
+  CLOUD, ENVIRONMENTS, ENVIRONMENT_LABELS, LINUX, adminConsoleLink, navForEnvironment, switchTargetPath,
+} from '../environment'
+import { getCloudSources } from '../api/client'
+import { azureStatusLabel } from '../cloud/cloudSource'
 import { Select } from './ui/Input'
+import UserMenu from './UserMenu'
 
-const NAV = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/servers', label: 'Servers', icon: Server },
-  { to: '/events', label: 'Events', icon: TerminalSquare },
-  { to: '/alerts', label: 'Alerts', icon: TriangleAlert },
-  { to: '/detection', label: 'Detection', icon: BrainCircuit },
-  { to: '/intelligence', label: 'DefenSync Intelligence', icon: Network },
-  { to: '/collection', label: 'Collection', icon: DatabaseZap, adminOnly: true },
-]
+const NAV_ICONS = {
+  dashboard: LayoutDashboard,
+  servers: Server,
+  'cloud-accounts': Cloud,
+  events: TerminalSquare,
+  alerts: TriangleAlert,
+  intelligence: Network,
+  collection: DatabaseZap,
+}
+
+const SEARCH_PLACEHOLDER = {
+  [LINUX]: 'Search Linux events, users, hosts...',
+  [CLOUD]: 'Search cloud sign-ins, identities, resources...',
+}
+
+function EnvironmentSwitch({ environment, onChange, collapsed }) {
+  return (
+    <div role="radiogroup" aria-label="Environment" className={`mb-4 grid gap-1 rounded-2xl border border-[#DADDD8] bg-white p-1 ${collapsed ? 'grid-cols-1' : 'grid-cols-2'}`}>
+      {ENVIRONMENTS.map((value) => {
+        const active = value === environment
+        const Icon = value === LINUX ? Server : Cloud
+        return (
+          <button
+            key={value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            data-environment-switch={value}
+            onClick={() => onChange(value)}
+            className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-bold uppercase tracking-wide transition ${
+              active ? 'bg-[#111111] text-white shadow-sm' : 'text-[#6F746F] hover:bg-[#F0F1EF] hover:text-[#111111]'
+            }`}
+            title={`${ENVIRONMENT_LABELS[value]} environment`}
+          >
+            <Icon className="h-4 w-4" />
+            {!collapsed && value}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
 
 function NavItem({ to, label, icon: Icon, end, collapsed, onClick }) {
   return (
@@ -46,7 +86,10 @@ function NavItem({ to, label, icon: Icon, end, collapsed, onClick }) {
 export default function Layout() {
   const { user, logout, isAdmin } = useAuth()
   const { servers, selectedServerId, setSelectedServerId, loading: serversLoading } = useSelectedServer()
+  const { environment, setEnvironment } = useEnvironment()
   const navigate = useNavigate()
+  const location = useLocation()
+  const isLinux = environment === LINUX
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [now, setNow] = useState(new Date())
@@ -56,12 +99,39 @@ export default function Layout() {
     return () => clearInterval(id)
   }, [])
 
-  const visibleNav = NAV.filter((item) => !item.adminOnly || isAdmin)
+  const [cloudSources, setCloudSources] = useState(null)
+  useEffect(() => {
+    if (environment !== CLOUD) return undefined
+    let active = true
+    const load = () => getCloudSources()
+      .then((data) => { if (active) setCloudSources(data) })
+      .catch(() => { if (active) setCloudSources(null) })
+    load()
+    window.addEventListener('defensync:data-refresh', load)
+    return () => {
+      active = false
+      window.removeEventListener('defensync:data-refresh', load)
+    }
+  }, [environment, location.pathname])
+
+  const visibleNav = navForEnvironment(environment, { isAdmin }).map((item) => ({ ...item, icon: NAV_ICONS[item.key] }))
   const userInitial = useMemo(() => user?.username?.slice(0, 1)?.toUpperCase() || 'U', [user])
+  const adminPath = adminConsoleLink(user)
+  const menuLinks = [
+    { to: '/trusted-devices', label: 'Trusted Devices', icon: Fingerprint },
+    ...(adminPath ? [{ to: adminPath, label: 'Admin Console', icon: Shield }] : []),
+  ]
 
   const handleLogout = () => {
     logout()
     navigate('/login')
+  }
+
+  const handleEnvironmentChange = (next) => {
+    if (next === environment) return
+    setEnvironment(next)
+    setSidebarOpen(false)
+    navigate(switchTargetPath(location.pathname, next))
   }
 
   const sidebar = (
@@ -77,6 +147,8 @@ export default function Layout() {
           </div>
         )}
       </div>
+
+      <EnvironmentSwitch environment={environment} onChange={handleEnvironmentChange} collapsed={collapsed} />
 
       <nav className="flex-1 space-y-2">
         {visibleNav.map((item) => (
@@ -139,44 +211,60 @@ export default function Layout() {
             </button>
             <div className="flex min-w-0 flex-1 items-center gap-2 rounded-full border border-[#DADDD8] bg-[#F7F8F6] px-4 py-2">
               <Search className="h-4 w-4 shrink-0 text-[#6F746F]" />
-              <span className="truncate text-sm text-[#6F746F]">Search events, users, hosts...</span>
+              <span className="truncate text-sm text-[#6F746F]">{SEARCH_PLACEHOLDER[environment]}</span>
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
-              <Select
-                value={selectedServerId}
-                onChange={(event) => setSelectedServerId(event.target.value)}
-                className="hidden w-44 sm:block"
-                disabled={serversLoading}
-                aria-label="Filter by server"
+              <span
+                className="hidden rounded-full border border-[#111111] px-3 py-2 text-xs font-bold uppercase tracking-wide text-[#111111] sm:inline-flex"
+                data-environment-indicator={environment}
               >
-                <option value="">All Servers</option>
-                {servers.map((server) => (
-                  <option key={server.id} value={server.id}>{server.server_name}</option>
-                ))}
-              </Select>
-              <Select
-                value={selectedServerId}
-                onChange={(event) => setSelectedServerId(event.target.value)}
-                className="w-36 sm:hidden"
-                disabled={serversLoading}
-                aria-label="Filter by server"
-              >
-                <option value="">All</option>
-                {servers.map((server) => (
-                  <option key={server.id} value={server.id}>{server.server_name}</option>
-                ))}
-              </Select>
-              <div className="hidden items-center gap-2 rounded-full bg-[#D8ECE6] px-3 py-2 text-xs font-semibold text-[#111111] md:flex">
-                <Activity className="h-4 w-4" />
-                Server status
-              </div>
+                {environment}
+              </span>
+              {isLinux ? (
+                <>
+                  <Select
+                    value={selectedServerId}
+                    onChange={(event) => setSelectedServerId(event.target.value)}
+                    className="hidden w-44 sm:block"
+                    disabled={serversLoading}
+                    aria-label="Filter by server"
+                  >
+                    <option value="">All Servers</option>
+                    {servers.map((server) => (
+                      <option key={server.id} value={server.id}>{server.server_name}</option>
+                    ))}
+                  </Select>
+                  <Select
+                    value={selectedServerId}
+                    onChange={(event) => setSelectedServerId(event.target.value)}
+                    className="w-36 sm:hidden"
+                    disabled={serversLoading}
+                    aria-label="Filter by server"
+                  >
+                    <option value="">All</option>
+                    {servers.map((server) => (
+                      <option key={server.id} value={server.id}>{server.server_name}</option>
+                    ))}
+                  </Select>
+                  <div className="hidden items-center gap-2 rounded-full bg-[#D8ECE6] px-3 py-2 text-xs font-semibold text-[#111111] md:flex">
+                    <Activity className="h-4 w-4" />
+                    Server status
+                  </div>
+                </>
+              ) : (
+                <div className="hidden items-center gap-2 rounded-full bg-[#E3ECF7] px-3 py-2 text-xs font-semibold text-[#111111] md:flex" data-azure-status>
+                  <Cloud className="h-4 w-4" />
+                  {azureStatusLabel(cloudSources)}
+                </div>
+              )}
               <div className="hidden rounded-full border border-[#DADDD8] bg-[#F7F8F6] px-3 py-2 font-mono text-xs text-[#111111] md:block">
                 {now.toLocaleTimeString()}
               </div>
               <button type="button" className="rounded-full border border-[#DADDD8] bg-[#F7F8F6] p-2.5 text-[#111111] transition hover:bg-[#ECEFED]" aria-label="Notifications">
                 <Bell className="h-5 w-5" />
               </button>
+              <UserMenu username={user?.username} role={user?.role} onLogout={handleLogout} links={menuLinks} />
             </div>
           </div>
         </header>

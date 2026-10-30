@@ -25,13 +25,23 @@ class DashboardService:
         *,
         owner_id: str | None = None,
         server_id: str | None = None,
-    ) -> dict[str, int]:
-        """Calculate and return overall SIEM summary statistics across collected security logs."""
+        visibility=None,
+        account_id: str | None = None,
+        environment: str | None = None,
+        server_owner_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Calculate SIEM summary statistics; event metrics cover only `environment` when it is given.
+
+        `server_owner_id` scopes fleet health for analysts without an account; leaving both it and
+        `account_id` empty counts every server, which only an admin may do.
+        """
         started = time.perf_counter()
         logger.debug(
-            "Generating dashboard summary metrics owner_id=%s server_id=%s",
+            "Generating dashboard summary metrics owner_id=%s server_id=%s account_id=%s environment=%s",
             owner_id,
             server_id,
+            account_id,
+            environment,
         )
         try:
             self._apply_statement_timeout()
@@ -39,23 +49,26 @@ class DashboardService:
                 self._session,
                 owner_id=owner_id,
                 server_id=server_id,
+                visibility=visibility,
+                environment=environment,
             )
             summary.update(
                 server_crud.health_summary(
                     self._session,
-                    owner_id=owner_id,
+                    owner_id=owner_id or server_owner_id,
                     server_id=server_id,
+                    account_id=account_id,
                 )
             )
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             if elapsed_ms > 750:
                 logger.warning("Dashboard summary query was slow: %sms owner_id=%s", elapsed_ms, owner_id)
-            return self._with_defaults(summary)
+            return {**self._with_defaults(summary), "environment": environment}
         except Exception:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             logger.exception("Dashboard summary failed after %sms; returning zero defaults", elapsed_ms)
             self._session.rollback()
-            return self.empty_summary()
+            return self.empty_summary(environment)
 
     def _apply_statement_timeout(self) -> None:
         """Bound PostgreSQL dashboard reads; ignored on engines that do not support it."""
@@ -68,8 +81,8 @@ class DashboardService:
             self._session.rollback()
 
     @classmethod
-    def empty_summary(cls) -> dict[str, int]:
-        return cls._with_defaults({})
+    def empty_summary(cls, environment: str | None = None) -> dict[str, Any]:
+        return {**cls._with_defaults({}), "environment": environment}
 
     @staticmethod
     def _with_defaults(summary: dict[str, Any]) -> dict[str, int]:
@@ -81,6 +94,10 @@ class DashboardService:
             "unique_users",
             "unique_ips",
             "average_risk_score",
+            "max_risk_score",
+            "system_snapshots",
+            "system_events",
+            "collector_generated_events",
             "total_servers",
             "active_servers",
             "online_servers",

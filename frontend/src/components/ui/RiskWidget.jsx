@@ -1,6 +1,8 @@
+import { primaryScoreSeverity } from '../../intelligence/primaryScore'
+
 export default function RiskWidget({ score = 0, label = 'Risk Score', size = 'md' }) {
   const normalized = Math.min(100, Math.max(0, Number(score) || 0))
-  const level = normalized >= 80 ? 'critical' : normalized >= 60 ? 'high' : normalized >= 40 ? 'medium' : 'low'
+  const level = primaryScoreSeverity(normalized).level
   const colors = {
     critical: { stroke: '#ef4444', text: 'text-red-400', bg: 'from-red-500/20' },
     high: { stroke: '#f97316', text: 'text-orange-400', bg: 'from-orange-500/20' },

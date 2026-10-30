@@ -67,7 +67,10 @@ def migrate() -> None:
             conn.execute(text("ALTER TABLE events ADD COLUMN IF NOT EXISTS behavioral_risk_score INTEGER"))
             conn.execute(text("ALTER TABLE events ADD COLUMN IF NOT EXISTS behavioral_classification VARCHAR(40)"))
             conn.execute(text("ALTER TABLE events ADD COLUMN IF NOT EXISTS risk_reasons TEXT"))
-            conn.execute(text("ALTER TABLE events ADD COLUMN IF NOT EXISTS baseline_version INTEGER"))
+            conn.execute(text("ALTER TABLE events ADD COLUMN IF NOT EXISTS collection_timestamp TIMESTAMP"))
+            conn.execute(text("ALTER TABLE events ADD COLUMN IF NOT EXISTS timestamp_source VARCHAR(40)"))
+            conn.execute(text("ALTER TABLE events ADD COLUMN IF NOT EXISTS created_at TIMESTAMP"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_collection_timestamp ON events(collection_timestamp)"))
             conn.execute(text("UPDATE events SET hash = md5(raw_log || event_id) WHERE hash IS NULL"))
             conn.execute(text("UPDATE events SET source_type = 'LINUX' WHERE source_type IS NULL"))
             conn.execute(text("UPDATE events SET data_origin = 'LIVE_LINUX' WHERE data_origin IS NULL"))
@@ -154,10 +157,12 @@ def migrate() -> None:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_behavior_profiles_server_id ON behavior_profiles(server_id)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_behavior_profiles_status ON behavior_profiles(status)"))
 
-        if _table_exists(conn, "alerts"):
-            conn.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS server_id VARCHAR(36)"))
-            conn.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS owner_id VARCHAR(36)"))
-            conn.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS risk_level VARCHAR(20)"))
+            conn.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS explanation TEXT"))
+            conn.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS recommendation TEXT"))
+            conn.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS risk_factors TEXT"))
+            conn.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS incident_id VARCHAR(36)"))
+            conn.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS event_timestamp TIMESTAMP"))
+            conn.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION"))
         if _table_exists(conn, "users"):
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(50)"))
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)"))
@@ -214,6 +219,106 @@ def migrate() -> None:
                 FROM servers s
                 WHERE a.server_id = s.id AND a.owner_id IS NULL
             """))
+
+        if not _table_exists(conn, "incidents"):
+            conn.execute(text("""
+                CREATE TABLE incidents (
+                    id VARCHAR(36) PRIMARY KEY,
+                    owner_id VARCHAR(36),
+                    incident_id VARCHAR(80) NOT NULL UNIQUE,
+                    title VARCHAR(240) NOT NULL,
+                    severity VARCHAR(20) NOT NULL DEFAULT 'medium',
+                    risk_score INTEGER NOT NULL DEFAULT 0,
+                    confidence INTEGER NOT NULL DEFAULT 0,
+                    actor VARCHAR(255),
+                    source VARCHAR(80),
+                    start_time TIMESTAMP,
+                    end_time TIMESTAMP,
+                    event_ids TEXT,
+                    evidence TEXT,
+                    explanation TEXT,
+                    recommendation TEXT,
+                    status VARCHAR(30) NOT NULL DEFAULT 'open',
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """))
+        if _table_exists(conn, "incidents"):
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_incidents_owner_id ON incidents(owner_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_incidents_actor ON incidents(actor)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_incidents_start_time ON incidents(start_time)"))
+        if not _table_exists(conn, "risk_history"):
+            conn.execute(text("""
+                CREATE TABLE risk_history (
+                    id VARCHAR(36) PRIMARY KEY,
+                    owner_id VARCHAR(36),
+                    entity_key VARCHAR(255) NOT NULL,
+                    timestamp TIMESTAMP NOT NULL,
+                    risk_score INTEGER NOT NULL DEFAULT 0,
+                    source VARCHAR(40),
+                    reason TEXT,
+                    event_id VARCHAR(36),
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """))
+        if _table_exists(conn, "risk_history"):
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_risk_history_owner_id ON risk_history(owner_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_risk_history_entity_key ON risk_history(entity_key)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_risk_history_timestamp ON risk_history(timestamp)"))
+
+        if _table_exists(conn, "users"):
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS device_limit INTEGER NOT NULL DEFAULT 3"))
+
+        if not _table_exists(conn, "trusted_devices"):
+            conn.execute(text("""
+                CREATE TABLE trusted_devices (
+                    id VARCHAR(36) PRIMARY KEY,
+                    user_id VARCHAR(36) NOT NULL,
+                    account_id VARCHAR(36),
+                    display_name VARCHAR(120) NOT NULL DEFAULT 'Trusted device',
+                    public_key_jwk TEXT NOT NULL,
+                    public_key_thumbprint VARCHAR(64) NOT NULL,
+                    key_algorithm VARCHAR(20) NOT NULL DEFAULT 'ES256',
+                    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    enrolled_at TIMESTAMP,
+                    last_seen_at TIMESTAMP,
+                    revoked_at TIMESTAMP,
+                    enroll_source_ip VARCHAR(45),
+                    enroll_user_agent VARCHAR(512),
+                    last_source_ip VARCHAR(45),
+                    last_user_agent VARCHAR(512)
+                )
+            """))
+        if _table_exists(conn, "trusted_devices"):
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_trusted_devices_user_id ON trusted_devices(user_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_trusted_devices_account_id ON trusted_devices(account_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_trusted_devices_status ON trusted_devices(status)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_trusted_devices_public_key_thumbprint ON trusted_devices(public_key_thumbprint)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_trusted_devices_user_status ON trusted_devices(user_id, status)"))
+            conn.execute(text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_trusted_device_user_thumbprint
+                ON trusted_devices(user_id, public_key_thumbprint)
+            """))
+
+        if not _table_exists(conn, "device_challenges"):
+            conn.execute(text("""
+                CREATE TABLE device_challenges (
+                    id VARCHAR(36) PRIMARY KEY,
+                    user_id VARCHAR(36) NOT NULL,
+                    device_id VARCHAR(36),
+                    purpose VARCHAR(20) NOT NULL,
+                    nonce_hash VARCHAR(64) NOT NULL,
+                    expires_at TIMESTAMP NOT NULL,
+                    used_at TIMESTAMP,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """))
+        if _table_exists(conn, "device_challenges"):
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_device_challenges_user_id ON device_challenges(user_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_device_challenges_device_id ON device_challenges(device_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_device_challenges_purpose ON device_challenges(purpose)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_device_challenges_expires_at ON device_challenges(expires_at)"))
 
         if _table_exists(conn, "monitored_servers") and not _table_exists(conn, "servers"):
             conn.execute(text("""
@@ -273,9 +378,58 @@ def migrate() -> None:
             """))
             conn.execute(text("DROP TABLE monitored_servers"))
 
+        # Alternate-success collection → n8n outbox (also created by create_all for new installs).
+        conn.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS collection_n8n_sequences (
+                id VARCHAR(36) PRIMARY KEY,
+                scope_key VARCHAR(80) NOT NULL,
+                source_type VARCHAR(20) NOT NULL,
+                owner_id VARCHAR(36),
+                account_id VARCHAR(36),
+                success_count INTEGER NOT NULL DEFAULT 0,
+                last_counted_run_id VARCHAR(36),
+                created_at TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP NOT NULL,
+                CONSTRAINT uq_collection_n8n_sequence_scope_source UNIQUE (scope_key, source_type)
+            )
+            """
+        ))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_collection_n8n_sequences_scope_key ON collection_n8n_sequences(scope_key)"))
+        conn.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS collection_n8n_dispatches (
+                id VARCHAR(36) PRIMARY KEY,
+                event_id VARCHAR(36) NOT NULL,
+                source_type VARCHAR(20) NOT NULL,
+                collection_run_id VARCHAR(36) NOT NULL,
+                scope_key VARCHAR(80) NOT NULL,
+                owner_id VARCHAR(36),
+                account_id VARCHAR(36),
+                sequence_number INTEGER NOT NULL,
+                outcome VARCHAR(32) NOT NULL,
+                collection_completed_at TIMESTAMP,
+                status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at TIMESTAMP,
+                sent_at TIMESTAMP,
+                last_http_status INTEGER,
+                last_error VARCHAR(240),
+                created_at TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP NOT NULL,
+                CONSTRAINT uq_collection_n8n_dispatch_event_id UNIQUE (event_id),
+                CONSTRAINT uq_collection_n8n_dispatch_run UNIQUE (source_type, collection_run_id)
+            )
+            """
+        ))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_collection_n8n_dispatches_event_id ON collection_n8n_dispatches(event_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_collection_n8n_dispatches_status ON collection_n8n_dispatches(status)"))
+
     print(f"SQLAlchemy metadata tables before create_all: {sorted(Base.metadata.tables.keys())}")
     Base.metadata.create_all(bind=engine)
     print(f"SQLAlchemy metadata tables after create_all: {sorted(Base.metadata.tables.keys())}")
+    from scripts.migrate_accounts import migrate as migrate_accounts
+    migrate_accounts()
     print("DefenSync schema migration complete.")
 
 

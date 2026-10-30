@@ -1,16 +1,20 @@
 import { useMemo, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
-  Activity, BarChart3, Bell, BrainCircuit, DatabaseZap, LayoutDashboard,
+  Activity, BarChart3, Bell, BrainCircuit, Cloud, DatabaseZap, LayoutDashboard, LayoutGrid,
   LogOut, Server, Settings, Shield, TerminalSquare, Users,
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
+import { useEnvironment } from '../../context/EnvironmentContext'
+import { ENVIRONMENT_LABELS, postAuthPath } from '../../environment'
+import UserMenu from '../UserMenu'
 import './admin.css'
 
 const NAV = [
   { to: '/admin/dashboard', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/admin/users', label: 'Users', icon: Users },
   { to: '/admin/servers', label: 'Servers', icon: Server },
+  { to: '/admin/cloud-accounts', label: 'Cloud Accounts', icon: Cloud },
   { to: '/admin/collections', label: 'Collections', icon: DatabaseZap },
   { to: '/admin/events', label: 'Events', icon: TerminalSquare },
   { to: '/admin/alerts', label: 'Alerts', icon: Bell },
@@ -23,9 +27,15 @@ const NAV = [
 
 export default function AdminLayout() {
   const { user, logout } = useAuth()
+  const { environment } = useEnvironment()
   const navigate = useNavigate()
   const [collapsed, setCollapsed] = useState(false)
   const initial = useMemo(() => user?.username?.slice(0, 1)?.toUpperCase() || 'A', [user])
+  const menuLinks = [{
+    to: postAuthPath(user, environment),
+    label: environment ? `${ENVIRONMENT_LABELS[environment]} Workspace` : 'Choose Environment',
+    icon: LayoutGrid,
+  }]
 
   const handleLogout = () => {
     logout()
@@ -92,9 +102,12 @@ export default function AdminLayout() {
       </aside>
 
       <main className={`flex-1 transition-all ${collapsed ? 'ml-[4.5rem]' : 'ml-60'}`}>
-        <div className="border-b border-zinc-800 bg-[#0a0a0b]/90 px-6 py-4 backdrop-blur">
-          <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Security Monitoring</p>
-          <h1 className="text-xl font-semibold text-white">Admin Console</h1>
+        <div className="flex items-center justify-between gap-4 border-b border-zinc-800 bg-[#0a0a0b]/90 px-6 py-4 backdrop-blur">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Security Monitoring</p>
+            <h1 className="text-xl font-semibold text-white">Admin Console</h1>
+          </div>
+          <UserMenu username={user?.username} role={user?.role} onLogout={handleLogout} links={menuLinks} variant="dark" />
         </div>
         <div className="p-6">
           <Outlet />

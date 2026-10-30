@@ -20,6 +20,18 @@ export async function deleteAdminUser(userId) {
   return data
 }
 
+export async function getAdminUserTrustedDevices(userId) {
+  const { data } = await api.get(`/api/v1/auth/trusted-devices/admin/users/${userId}`)
+  return data
+}
+
+export async function setAdminUserDeviceLimit(userId, deviceLimit) {
+  const { data } = await api.put(`/api/v1/auth/trusted-devices/admin/users/${userId}/limit`, {
+    device_limit: deviceLimit,
+  })
+  return data
+}
+
 export async function getAdminServers() {
   const { data } = await api.get('/api/v1/admin/servers')
   return data

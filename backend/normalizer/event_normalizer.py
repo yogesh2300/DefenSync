@@ -5,8 +5,10 @@ from __future__ import annotations
 import re
 import uuid
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, tzinfo
 from typing import Any, Iterable, Iterator, Protocol, Sequence
+
+from backend.core.timestamps import SOURCE_EVENT, SOURCE_FALLBACK, collection_now, parse_occurrence
 
 from backend.normalizer.event_types import (
     EventType,
@@ -14,6 +16,14 @@ from backend.normalizer.event_types import (
     category_for,
 )
 from backend.normalizer.severity import RiskScoreCalculator, SeverityLevel
+from backend.parser.patterns import (
+    PAM_FIELD,
+    SECURE_INVALID_USER,
+    SECURE_INVALID_USER_AUTH,
+    SECURE_PAM_AUTH_FAILURE,
+    SECURE_PAM_SESSION,
+    SECURE_SU_SWITCH,
+)
 
 ParsedLog = dict[str, Any]
 
@@ -33,6 +43,24 @@ _SECURE_SUCCESS_LOGIN = re.compile(
     r"for\s+(?P<user>\S+)\s+from\s+(?P<ip>\S+)",
     re.IGNORECASE,
 )
+# sudo's own audit line; the accompanying pam_unix(sudo:session) line is the same command.
+_SECURE_SUDO_COMMAND = re.compile(
+    r"^\s*(?:sudo:\s*)?(?P<user>[^\s:]+)\s*:\s*(?P<details>.*\bCOMMAND=(?P<cmd>.+))$",
+    re.IGNORECASE,
+)
+_SUDO_TARGET_USER = re.compile(r"\bUSER=(?P<target>[^\s;]+)")
+_SUDO_TTY = re.compile(r"\bTTY=(?P<tty>[^\s;]+)")
+# Denials sudo reports on its COMMAND line. Wrong passwords are counted from the per-attempt
+# pam_unix(sudo:auth) lines, so the "N incorrect password attempts" summary is not a second event.
+_SUDO_DENIALS = ("user NOT in sudoers", "command not allowed", "a password is required")
+_SUDO_PASSWORD_SUMMARY = "incorrect password attempt"
+
+# PAM services that represent an interactive login, as opposed to su/sudo/cron/systemd-user.
+LOGIN_SERVICES = frozenset({
+    "sshd", "login", "remote", "cockpit", "xrdp-sesman", "lightdm", "sddm",
+    "gdm-password", "gdm-autologin", "gdm-fingerprint", "gdm-smartcard",
+})
+_SUDO_SERVICES = frozenset({"sudo", "sudo-i"})
 _SECURE_TIMESTAMP = re.compile(
     r"^(?P<month>\w{3})\s+(?P<day>\d{1,2})\s+(?P<time>\d{2}:\d{2}:\d{2})$"
 )
@@ -123,6 +151,116 @@ class SecureLogClassifier:
                 metadata={"program": parsed.get("program"), "pid": parsed.get("pid")},
             )
 
+        # Parsed by secure_events.parse_invalid_user but previously declined here, so probes
+        # like "Invalid user …" / input_userauth_request never became stored security events.
+        # "Failed password for invalid user …" is already handled above as Failed Login.
+        invalid = SECURE_INVALID_USER.search(message)
+        if invalid:
+            username = invalid.group("user")
+            return ClassificationResult(
+                EventType.INVALID_USER,
+                username=username,
+                source_ip=invalid.group("ip"),
+                is_root=_is_root_user(username),
+                is_remote=True,
+                metadata={"program": parsed.get("program"), "pid": parsed.get("pid")},
+            )
+        invalid_auth = SECURE_INVALID_USER_AUTH.search(message)
+        if invalid_auth:
+            username = invalid_auth.group("user")
+            return ClassificationResult(
+                EventType.INVALID_USER,
+                username=username,
+                is_root=_is_root_user(username),
+                is_remote=False,
+                metadata={"program": parsed.get("program"), "pid": parsed.get("pid")},
+            )
+
+        sudo = _SECURE_SUDO_COMMAND.search(message)
+        if sudo:
+            details = sudo.group("details")
+            if _SUDO_PASSWORD_SUMMARY in details:
+                return None
+            target = _SUDO_TARGET_USER.search(details)
+            tty = _SUDO_TTY.search(details)
+            denial = next((reason for reason in _SUDO_DENIALS if reason in details), None)
+            if denial:
+                return ClassificationResult(
+                    EventType.FAILED_PRIVILEGE_ESCALATION,
+                    username=sudo.group("user"),
+                    is_root=bool(target) and _is_root_user(target.group("target")),
+                    metadata={**self._process(parsed), "mechanism": "sudo", "outcome": "failure",
+                              "reason": denial, "cmd": sudo.group("cmd").strip(),
+                              "target_user": target.group("target") if target else None,
+                              "tty": tty.group("tty") if tty else None},
+                )
+            target_user = target.group("target") if target else "root"
+            return ClassificationResult(
+                EventType.SUDO_COMMAND,
+                username=sudo.group("user"),
+                is_root=_is_root_user(target_user),
+                metadata={"program": parsed.get("program"), "pid": parsed.get("pid"),
+                          "cmd": sudo.group("cmd").strip(), "target_user": target_user},
+            )
+
+        su = SECURE_SU_SWITCH.match(message)
+        if su and parsed.get("program") == "su":
+            target_user = su.group("target")
+            failed = bool(su.group("failed"))
+            return ClassificationResult(
+                EventType.FAILED_PRIVILEGE_ESCALATION if failed else EventType.PRIVILEGE_ESCALATION,
+                username=su.group("user"),
+                is_root=_is_root_user(target_user),
+                metadata={**self._process(parsed), "mechanism": "su", "outcome": "failure" if failed else "success",
+                          "target_user": target_user, "tty": su.group("tty")},
+            )
+
+        auth_failure = SECURE_PAM_AUTH_FAILURE.match(message)
+        if auth_failure:
+            return self._pam_auth_failure(parsed, auth_failure.group("service"), auth_failure.group("fields"))
+
+        pam_session = SECURE_PAM_SESSION.match(message)
+        if pam_session and pam_session.group("service") in LOGIN_SERVICES:
+            username = pam_session.group("user")
+            opened = pam_session.group("action") == "opened"
+            uid = pam_session.group("uid")
+            return ClassificationResult(
+                EventType.SESSION_OPENED if opened else EventType.SESSION_CLOSED,
+                username=username,
+                is_root=_is_root_user(username),
+                metadata={**self._process(parsed), "service": pam_session.group("service"),
+                          "uid": int(uid) if uid else None},
+            )
+
+        return None
+
+    @staticmethod
+    def _process(parsed: ParsedLog) -> dict[str, Any]:
+        return {"program": parsed.get("program"), "pid": parsed.get("pid")}
+
+    def _pam_auth_failure(self, parsed: ParsedLog, service: str, raw_fields: str) -> ClassificationResult | None:
+        """One failed attempt. sshd and su have their own canonical failure lines, so theirs are not counted."""
+        fields = dict(PAM_FIELD.findall(raw_fields))
+        user = fields.get("user") or None
+        rhost = fields.get("rhost") or None
+        tty = fields.get("tty") or None
+        if service in _SUDO_SERVICES:
+            initiator = fields.get("ruser") or fields.get("logname") or user
+            return ClassificationResult(
+                EventType.FAILED_PRIVILEGE_ESCALATION,
+                username=initiator,
+                metadata={**self._process(parsed), "mechanism": "sudo", "outcome": "failure",
+                          "reason": "authentication failure", "service": service, "tty": tty},
+            )
+        if service in LOGIN_SERVICES and service != "sshd":
+            return ClassificationResult(
+                EventType.FAILED_LOGIN,
+                username=user,
+                source_ip=rhost,
+                is_root=_is_root_user(user),
+                is_remote=bool(rhost),
+                metadata={**self._process(parsed), "service": service, "tty": tty},
+            )
         return None
 
 
@@ -285,48 +423,24 @@ class TimestampNormalizer(ABC):
 
 
 class DefaultTimestampNormalizer(TimestampNormalizer):
-    """Normalize secure syslog and audit epoch timestamps."""
+    """Normalize secure syslog and audit epoch timestamps to source occurrence time."""
+
+    def __init__(self, collected_at: datetime | None = None, host_tz: tzinfo | None = None) -> None:
+        self._collected_at = collected_at or collection_now()
+        self._host_tz = host_tz
 
     def normalize(self, parsed: ParsedLog) -> str:
-        timestamp = parsed.get("timestamp")
-        if timestamp is None:
-            return datetime.now(timezone.utc).isoformat()
-
-        if parsed.get("source") == "audit":
-            return self._normalize_audit_timestamp(str(timestamp))
-
-        if parsed.get("source") == "secure":
-            return self._normalize_secure_timestamp(str(timestamp))
-
-        return str(timestamp)
-
-    @staticmethod
-    def _normalize_audit_timestamp(raw: str) -> str:
-        try:
-            epoch = float(raw.split(".", maxsplit=1)[0])
-            return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
-        except (ValueError, OSError):
-            return raw
-
-    @staticmethod
-    def _normalize_secure_timestamp(raw: str) -> str:
-        match = _SECURE_TIMESTAMP.match(raw.strip())
-        if not match:
-            return raw
-
-        month = _MONTHS.get(match.group("month"))
-        if month is None:
-            return raw
-
-        day = int(match.group("day"))
-        hour, minute, second = (int(part) for part in match.group("time").split(":"))
-        year = datetime.now(timezone.utc).year
-
-        try:
-            dt = datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc)
-            return dt.isoformat()
-        except ValueError:
-            return raw
+        occurrence = parse_occurrence(
+            parsed.get("raw") or parsed.get("raw_log") or "",
+            collected_at=self._collected_at,
+            source_hint=str(parsed.get("source") or ""),
+            explicit=parsed.get("timestamp"),
+            host_tz=self._host_tz,
+        )
+        parsed["timestamp_source"] = occurrence.source
+        parsed["timestamp_tz_basis"] = occurrence.tz_basis
+        parsed["collection_timestamp"] = self._collected_at.isoformat()
+        return occurrence.event_time.isoformat()
 
 
 class EventNormalizer:
@@ -396,6 +510,9 @@ class EventNormalizer:
                 "line_number": parsed.get("line_number"),
                 "is_root": classification.is_root,
                 "is_remote": classification.is_remote,
+                "timestamp_source": parsed.get("timestamp_source") or SOURCE_EVENT,
+                "timestamp_tz_basis": parsed.get("timestamp_tz_basis"),
+                "collection_timestamp": parsed.get("collection_timestamp"),
                 **classification.metadata,
             },
         )

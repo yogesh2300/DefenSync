@@ -12,6 +12,7 @@ class HealthStatus(StrEnum):
     ERROR = "error"
     UNREACHABLE = "unreachable"
     AUTHENTICATION_FAILED = "authentication_failed"
+    CREDENTIAL_ERROR = "credential_error"
     TIMEOUT = "timeout"
     UNKNOWN = "unknown"
 
@@ -25,6 +26,7 @@ OFFLINE_STATUSES = frozenset({
 ERROR_STATUSES = frozenset({
     HealthStatus.ERROR,
     HealthStatus.AUTHENTICATION_FAILED,
+    HealthStatus.CREDENTIAL_ERROR,
 })
 TRANSIENT_STATUSES = frozenset({HealthStatus.CONNECTING})
 
@@ -45,6 +47,7 @@ def health_label(status: str | None) -> str:
         HealthStatus.ERROR: "Connection Lost",
         HealthStatus.UNREACHABLE: "Unreachable",
         HealthStatus.AUTHENTICATION_FAILED: "Authentication Failed",
+        HealthStatus.CREDENTIAL_ERROR: "Credential Error",
         HealthStatus.TIMEOUT: "Timeout",
         HealthStatus.UNKNOWN: "Unknown",
     }

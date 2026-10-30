@@ -4,6 +4,8 @@ DefenSync Centralized Exception Handling.
 
 from __future__ import annotations
 
+import json
+
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -52,6 +54,39 @@ class DuplicateResourceError(DefenSyncException):
         super().__init__(message)
 
 
+class MFAError(DefenSyncException):
+    """Second-factor failure with a stable `code` for clients. Never carries OTP values."""
+
+    def __init__(self, code: str, message: str, *, status_code: int = 401, **details: object) -> None:
+        self.code = code
+        self.status_code = status_code
+        self.details = {"code": code, **{key: value for key, value in details.items() if value is not None}}
+        super().__init__(message)
+
+
+class DeviceTrustError(DefenSyncException):
+    """Trusted-device enrollment/proof failure. Never carries private keys, OTPs, or passwords."""
+
+    def __init__(self, code: str, message: str, *, status_code: int = 403, **details: object) -> None:
+        self.code = code
+        self.status_code = status_code
+        self.details = {"code": code, **{key: value for key, value in details.items() if value is not None}}
+        super().__init__(message)
+
+
+class CollectionProcessingError(DefenSyncException):
+    """Logs were retrieved over SSH but could not be processed or stored. Never carries credentials."""
+
+    status_code = 500
+
+    def __init__(self, message: str, **details: object) -> None:
+        self.details = {
+            "code": "COLLECTION_PROCESSING_FAILED",
+            **{key: value for key, value in details.items() if value is not None},
+        }
+        super().__init__(message)
+
+
 async def defensync_exception_handler(
     request: Request,
     exc: DefenSyncException,
@@ -66,7 +101,7 @@ async def defensync_exception_handler(
         DatabaseException: status.HTTP_500_INTERNAL_SERVER_ERROR,
     }
 
-    status_code = mapping.get(type(exc), status.HTTP_400_BAD_REQUEST)
+    status_code = getattr(exc, "status_code", None) or mapping.get(type(exc), status.HTTP_400_BAD_REQUEST)
 
     if isinstance(exc, DatabaseException):
         logger.exception("Database exception on %s %s: %s", request.method, request.url.path, exc)
@@ -79,6 +114,7 @@ async def defensync_exception_handler(
             "success": False,
             "error": str(exc),
             "type": exc.__class__.__name__,
+            **getattr(exc, "details", {}),
         },
     )
 
@@ -109,7 +145,7 @@ async def validation_exception_handler(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
             "success": False,
-            "error": exc.errors(),
+            "error": json.loads(json.dumps(exc.errors(), default=str)),
             "type": "ValidationError",
         },
     )
@@ -119,9 +155,18 @@ async def generic_exception_handler(
     request: Request,
     exc: Exception,
 ) -> JSONResponse:
-
+    if isinstance(exc, RequestValidationError):
+        return await validation_exception_handler(request, exc)
+    try:
+        from pydantic import ValidationError
+        if isinstance(exc, ValidationError):
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                content={"success": False, "error": exc.errors(), "type": "ValidationError"},
+            )
+    except Exception:
+        pass
     logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
-
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={

@@ -19,3 +19,7 @@ class EventType(StrEnum):
     FILE_DELETION = "File Deletion"
     PERMISSION_CHANGE = "Permission Change"
     COMMAND_EXECUTION = "Command Execution"
+    PRIVILEGE_ESCALATION = "Privilege Escalation"
+    FAILED_PRIVILEGE_ESCALATION = "Failed Privilege Escalation"
+    SESSION_OPENED = "Session Opened"
+    SESSION_CLOSED = "Session Closed"

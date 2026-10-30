@@ -3,16 +3,87 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any, Iterable, Literal, Mapping
 
 from sqlalchemy.orm import Session
 
-from backend.core.exceptions import DatabaseException, ResourceNotFoundError
+from backend.core.environments import CLOUD, normalize_environment
+from backend.core.exceptions import DatabaseException, ResourceNotFoundError, ValidationException
 from backend.database import crud
 from backend.database.models import SecurityEvent
+from backend.services.cloud.azure_normalizer import DATA_ORIGIN as AZURE_LOG_ANALYTICS_ORIGIN
 
 logger = logging.getLogger(__name__)
+
+MAX_EVENT_IDS_FILTER = 50
+MAX_EVENT_ID_LENGTH = 128
+_EVENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]+$")
+
+
+def resolve_cloud_event_ids_data_origin(
+    *,
+    event_ids: list[str] | None,
+    environment: str | None,
+    requested_data_origin: str | None,
+) -> str | None:
+    """Force Azure live origin for Cloud event_id lookups.
+
+    Cloud Investigation related-event navigation uses event_ids under environment=CLOUD.
+    Trusting a client-supplied data_origin alone is insufficient, so the server overrides
+    origin whenever an explicit ID filter is combined with the CLOUD environment. Ordinary
+    listing (no event_ids) keeps the caller's requested data_origin unchanged.
+    """
+    if not event_ids:
+        return requested_data_origin
+    if environment is None:
+        return requested_data_origin
+    try:
+        family = normalize_environment(environment)
+    except Exception:
+        return requested_data_origin
+    if family != CLOUD:
+        return requested_data_origin
+    return AZURE_LOG_ANALYTICS_ORIGIN
+
+
+def normalize_event_ids(raw: list[str] | None) -> list[str] | None:
+    """Validate and de-duplicate explicit event_id filters for event queries.
+
+    Accepts repeated query values and comma-separated lists. Returns None when no
+    filter was supplied so ordinary listing behavior is unchanged.
+    """
+    if raw is None:
+        return None
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        if value is None:
+            continue
+        for part in str(value).split(","):
+            item = part.strip()
+            if not item:
+                continue
+            if len(item) > MAX_EVENT_ID_LENGTH:
+                raise ValidationException(
+                    f"Each event_id must be at most {MAX_EVENT_ID_LENGTH} characters."
+                )
+            if not _EVENT_ID_PATTERN.fullmatch(item):
+                raise ValidationException(
+                    "event_ids may contain only letters, digits, and . _ : - characters."
+                )
+            if item in seen:
+                continue
+            seen.add(item)
+            cleaned.append(item)
+    if not cleaned:
+        raise ValidationException("event_ids cannot be empty.")
+    if len(cleaned) > MAX_EVENT_IDS_FILTER:
+        raise ValidationException(
+            f"At most {MAX_EVENT_IDS_FILTER} event_ids may be requested."
+        )
+    return cleaned
 
 
 class EventService:
@@ -43,6 +114,7 @@ class EventService:
         limit: int = 100,
         owner_id: str | None = None,
         server_id: str | None = None,
+        visibility=None,
     ) -> list[SecurityEvent]:
         """Retrieve recent security events ordered by timestamp."""
         logger.debug("Retrieving recent events with limit=%d server_id=%s", limit, server_id)
@@ -51,6 +123,7 @@ class EventService:
             limit=limit,
             owner_id=owner_id,
             server_id=server_id,
+            visibility=visibility,
         )
 
     def get_high_risk_events(
@@ -59,20 +132,33 @@ class EventService:
         limit: int = 100,
         owner_id: str | None = None,
         server_id: str | None = None,
+        visibility=None,
+        offset: int = 0,
     ) -> list[SecurityEvent]:
         """Retrieve events at or above the minimum risk score threshold."""
-        logger.debug(
-            "Retrieving high-risk events with min_score=%d limit=%d server_id=%s",
-            min_score,
-            limit,
-            server_id,
-        )
         return crud.get_high_risk_events(
             self._session,
             min_score=min_score,
             limit=limit,
             owner_id=owner_id,
             server_id=server_id,
+            visibility=visibility,
+            offset=offset,
+        )
+
+    def count_high_risk_events(
+        self,
+        min_score: int = 70,
+        owner_id: str | None = None,
+        server_id: str | None = None,
+        visibility=None,
+    ) -> int:
+        return crud.count_high_risk_events(
+            self._session,
+            min_score=min_score,
+            owner_id=owner_id,
+            server_id=server_id,
+            visibility=visibility,
         )
 
     def get_events_by_username(self, username: str, limit: int = 100) -> list[SecurityEvent]:
@@ -123,15 +209,19 @@ class EventService:
         minimum_behavioral_risk: int | None = None,
         actor_id: str | None = None,
         session_id: str | None = None,
+        event_ids: list[str] | None = None,
+        record_kind: str | None = None,
         sort_order: Literal["newest", "oldest"] = "newest",
+        visibility=None,
     ) -> list[SecurityEvent]:
         """Query, filter, search, and paginate security events."""
         logger.debug(
-            "Querying events limit=%d offset=%d search=%r event_type=%r",
+            "Querying events limit=%d offset=%d search=%r event_type=%r event_ids=%s",
             limit,
             offset,
             search,
             event_type,
+            None if event_ids is None else len(event_ids),
         )
         return crud.query_events(
             self._session,
@@ -160,7 +250,10 @@ class EventService:
             minimum_behavioral_risk=minimum_behavioral_risk,
             actor_id=actor_id,
             session_id=session_id,
+            event_ids=event_ids,
+            record_kind=record_kind,
             sort_order=sort_order,
+            visibility=visibility,
         )
 
     def count_events(
@@ -189,6 +282,7 @@ class EventService:
         minimum_behavioral_risk: int | None = None,
         actor_id: str | None = None,
         session_id: str | None = None,
+        visibility=None,
     ) -> int:
         """Return the total number of events matching the given filter criteria."""
         return crud.count_query_events(
@@ -216,6 +310,7 @@ class EventService:
             minimum_behavioral_risk=minimum_behavioral_risk,
             actor_id=actor_id,
             session_id=session_id,
+            visibility=visibility,
         )
 
     def search_events(

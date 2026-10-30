@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
-"""Quick QA verification script for DefenSync (read-only API checks)."""
+"""Quick QA verification script for DefenSync (read-only API checks).
+
+Sign-in completes the mandatory OTP step. By default the code is read from the local
+QA mailbox, so the backend must be started with SMTP_HOST=127.0.0.1 SMTP_PORT=2525
+SMTP_SECURITY=none SMTP_FROM=defensync-qa@localhost. With QA_OTP_SOURCE=prompt the
+code is typed from the admin's real inbox instead (input is hidden).
+"""
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import sys
@@ -12,9 +19,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from backend.bootstrap.default_admin import admin_config
+from backend.testing.otp_mailbox import OTPMailbox, QALoginError, login_with_otp
+
 BASE = os.getenv("API_URL", "http://127.0.0.1:8000").rstrip("/")
-ADMIN_USER = os.getenv("QA_ADMIN_USER", "admin")
-ADMIN_PASS = os.getenv("QA_ADMIN_PASS", "Admin@123")
+OTP_SOURCE = os.getenv("QA_OTP_SOURCE", "mailbox").strip().lower()
 
 
 def req(method: str, path: str, data=None, token=None, form=False):
@@ -70,10 +79,24 @@ def main() -> int:
     code, body = req("GET", "/health")
     check("api_health", code == 200 and body.get("status") == "healthy", str(code))
 
-    # Admin auth
-    code, body = req("POST", "/api/v1/auth/token", {"username": ADMIN_USER, "password": ADMIN_PASS}, form=True)
-    admin_token = body.get("access_token") if code == 200 else None
-    check("admin_login", code == 200 and bool(admin_token), str(code))
+    # Admin auth (ADMIN_EMAIL / ADMIN_PASSWORD from .env): email + password -> OTP challenge -> verify
+    admin_token = None
+    try:
+        config, problem = admin_config()
+        if config is None:
+            raise QALoginError(f"Admin bootstrap is not configured: {problem}")
+        if OTP_SOURCE == "prompt":
+            def read_code(challenge: dict) -> str:
+                return getpass.getpass(f"Verification code sent to {challenge.get('destination')}: ")
+
+            result = login_with_otp(req, config.email, config.password, read_code=read_code)
+        else:
+            with OTPMailbox() as mailbox:
+                result = login_with_otp(req, config.email, config.password, mailbox=mailbox)
+        admin_token = result.access_token
+        check("admin_login_otp", True, f"delivery={result.challenge.get('delivery')} destination={result.challenge.get('destination')}")
+    except QALoginError as exc:
+        check("admin_login_otp", False, str(exc))
 
     if not admin_token:
         print("\nCannot continue API checks without admin token.")

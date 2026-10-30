@@ -10,7 +10,7 @@ import { Input, Select } from '../components/ui/Input'
 import { useAuth } from '../context/AuthContext'
 import { useSelectedServer } from '../context/SelectedServerContext'
 
-const LOG_SOURCE_OPTIONS = ['journalctl', 'last', 'lastb', 'who', 'w', 'uptime', 'free', 'df', 'ps', 'ss', 'hostnamectl', 'uname']
+const LOG_SOURCE_OPTIONS = ['secure', 'auth', 'audit', 'journalctl', 'last', 'lastb', 'who', 'w', 'uptime', 'free', 'df', 'ps', 'ss', 'hostnamectl', 'uname']
 
 function StepBlock({ number, title, text, active }) {
   return (
@@ -161,9 +161,19 @@ export default function Collection() {
           ) : (
             <>
               <AlertBanner
-                message={result.message || (result.success ? `Collected ${result.collected_events ?? result.inserted} events` : 'Collection failed')}
+                message={
+                  result.success === false
+                    ? (result.message || 'Collection failed')
+                    : `Collection succeeded: ${result.collected_events ?? result.inserted ?? 0} events.`
+                }
                 type={result.success !== false ? 'success' : 'error'}
               />
+              {result.detection?.message && (
+                <AlertBanner
+                  type="info"
+                  message={`Detection: ${result.detection.message}`}
+                />
+              )}
               <pre className="max-h-[360px] overflow-auto rounded-3xl border border-[var(--panel-border)] bg-slate-950/80 p-4 text-xs text-slate-200">
                 {JSON.stringify(result, null, 2)}
               </pre>

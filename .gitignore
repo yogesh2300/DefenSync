@@ -13,6 +13,8 @@ venv/
 # Environment Variables
 .env
 .env.*
+!.env.example
+!backend/.env.example
 
 # IDE
 .vscode/
@@ -38,8 +40,15 @@ htmlcov/
 # SQLite (if ever used)
 *.sqlite3
 
+# Local database backups (contain password hashes and encrypted credentials)
+backups/
+
 # Misc
 *.swp
+
+# Persisted ML models
+models/*.joblib
+models/**/*.joblib
 
 # Research datasets
 datasets/**/raw/*
@@ -84,3 +93,19 @@ datasets/behavioral/behavioral_telemetry.csv
 # Notebook cache
 .ipynb_checkpoints/
 **/.ipynb_checkpoints/
+
+# Temporary PPT extraction (viva prep — not product source)
+.ppt_extract/
+.ppt_extract_final/
+.ppt_extract*.py
+
+# Model scratch / intermediate dumps
+*.pre_pool_format
+models/**/*.pre_pool_format
+
+# Extra dataset artifacts (keep READMEs via exception above)
+datasets/**/*.xlsx
+datasets/**/*.npz
+
+# Keep model dir placeholder
+!models/.gitkeep

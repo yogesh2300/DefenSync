@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.parser.patterns import AUDIT_KV, AUDIT_TIMESTAMP, AUDIT_SYSCALL_NAMES, SECURE_HEADER
+from backend.parser.patterns import AUDIT_KV, AUDIT_TIMESTAMP, AUDIT_SYSCALL_NAMES, ISO_SECURE_HEADER, SECURE_HEADER
 
 _UNSET_VALUES = frozenset({"unset", "4294967295", "-1", ""})
 
 
 def parse_secure_header(raw_line: str) -> dict[str, Any] | None:
     """Extract syslog header fields from a secure.log line."""
-    match = SECURE_HEADER.match(raw_line.strip())
+    match = SECURE_HEADER.match(raw_line.strip()) or ISO_SECURE_HEADER.match(raw_line.strip())
     if not match:
         return None
     return {

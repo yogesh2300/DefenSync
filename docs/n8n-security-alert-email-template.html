@@ -1,0 +1,84 @@
+<!--
+  DefenSync → n8n Send Email → HTML body
+  Paste this entire block into the Send Email node HTML field.
+
+  Requires webhook JSON under $json.body (DefenSync POST body as received by n8n).
+  Works for:
+    - collection + security_demo  (defensync-collection-n8n-v1)
+    - real incident               (defensync-incident-v1)
+
+  Prefer notification.email_fields (always filled by DefenSync with N/A fallbacks).
+  Do NOT leave n8n design-time preview placeholders in the template body.
+  To / Subject (keep existing SMTP credential):
+    To:      {{$json.body.notification.recipient_emails[0]}}
+    Subject: {{$json.body.notification.suggested_subject}}
+
+  One-line alternative (pre-rendered body):
+    {{$json.body.notification.suggested_html}}
+-->
+<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;line-height:1.45;color:#111">
+  <h2 style="margin:0 0 8px;font-size:18px">DefenSync Security Alert</h2>
+  <p><strong>{{$json.body.notification.email_fields.label || 'Security incident'}}</strong></p>
+  <table style="border-collapse:collapse;margin-top:8px">
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Severity</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.severity || $json.body.security_demo.severity || $json.body.incident.severity || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Environment</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.environment || $json.body.security_demo.environment || $json.body.incident.environment || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Risk Score</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.risk_score || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Confidence</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.confidence || $json.body.incident.confidence || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Actor</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.actor || $json.body.security_demo.initiating_user || $json.body.incident.actor || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Event Count</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.event_count || $json.body.incident.event_count || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Status</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.status || $json.body.security_demo.operation_result || $json.body.incident.status || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Detected Activity</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.detected_activity || $json.body.security_demo.title || $json.body.incident.title || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Operation</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.operation || $json.body.security_demo.operation || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Target</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.target_resource || $json.body.security_demo.target_resource || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Security Analysis</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.security_analysis || $json.body.security_demo.note || $json.body.incident.explanation || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Recommended Action</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.recommended_action || $json.body.security_demo.recommended_action || $json.body.incident.recommendation || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Incident ID</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.incident_id || $json.body.incident.incident_id || $json.body.event_id || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Collection ID</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.collection_id || $json.body.security_demo.collection_id || $json.body.collection_id || 'N/A'}}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 12px;color:#555;white-space:nowrap">Timestamp</td>
+      <td style="padding:6px 12px;color:#111">{{$json.body.notification.email_fields.event_timestamp || $json.body.security_demo.event_timestamp || $json.body.incident.end_time || $json.body.incident.start_time || 'N/A'}}</td>
+    </tr>
+  </table>
+</div>

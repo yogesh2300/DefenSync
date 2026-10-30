@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend.api.dependencies import get_current_user, get_db, resolve_owner_id
+from backend.api.dependencies import get_current_user, get_db, resolve_account_id, resolve_owner_id
 from backend.core.exceptions import ResourceNotFoundError, ValidationException
 from backend.database.models import User
 from backend.services.behavioral.baseline_service import BehavioralBaselineService, profile_to_dict
@@ -144,7 +144,8 @@ def list_behavioral_profiles(
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     owner_id = resolve_owner_id(current_user)
-    return [profile_to_dict(profile) for profile in BehavioralBaselineService(db).list_profiles(owner_id=owner_id)]
+    account_id = resolve_account_id(current_user)
+    return [profile_to_dict(profile) for profile in BehavioralBaselineService(db).list_profiles(owner_id=owner_id, account_id=account_id)]
 
 
 @router.get("/profiles/{identity_key}", status_code=status.HTTP_200_OK)
@@ -184,7 +185,8 @@ def analyze_behavioral_event(
 @router.get("/summary", status_code=status.HTTP_200_OK)
 def behavioral_summary(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     owner_id = resolve_owner_id(current_user)
-    return BehavioralAnalysisService(db).summary(owner_id=owner_id)
+    account_id = resolve_account_id(current_user)
+    return BehavioralAnalysisService(db).summary(owner_id=owner_id, account_id=account_id)
 
 
 @router.get("/anomalies", status_code=status.HTTP_200_OK)

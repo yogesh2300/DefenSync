@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { getServer, testServerConnection, updateServer } from '../api/client'
+import { getServer, testServerConnection, testServerCredentials, updateServer } from '../api/client'
+import { apiErrorMessage, buildUpdatePayload, planConnectionTest } from '../servers/editServer'
 import PageHeader from '../components/ui/PageHeader'
 import Card from '../components/ui/Card'
 import Button from '../components/ui/Button'
@@ -12,6 +13,7 @@ export default function EditServer() {
   const { serverId } = useParams()
   const navigate = useNavigate()
   const [form, setForm] = useState(null)
+  const [original, setOriginal] = useState(null)
   const [password, setPassword] = useState('')
   const [privateKey, setPrivateKey] = useState('')
   const [message, setMessage] = useState('')
@@ -19,7 +21,7 @@ export default function EditServer() {
 
   const load = useCallback(async () => {
     const srv = await getServer(serverId)
-    setForm({
+    const loaded = {
       server_name: srv.server_name,
       host: srv.host,
       port: srv.port,
@@ -29,7 +31,9 @@ export default function EditServer() {
       environment: srv.environment || 'production',
       description: srv.description || '',
       status: srv.status === 'inactive' ? 'inactive' : 'active',
-    })
+    }
+    setForm(loaded)
+    setOriginal(loaded)
   }, [serverId])
 
   useEffect(() => { load() }, [load])
@@ -40,14 +44,18 @@ export default function EditServer() {
     setTesting(true)
     setMessage('')
     try {
-      const payload = { ...form }
-      if (form.authentication_type === 'password' && password) payload.password = password
-      if (form.authentication_type === 'ssh_key' && privateKey) payload.private_key = privateKey
-      if (password || privateKey) await updateServer(serverId, payload)
-      const r = await testServerConnection(serverId)
-      setMessage(r.success ? `Connection OK (${r.latency_ms}ms)` : r.message)
+      const plan = planConnectionTest(original, form, { password, privateKey })
+      if (plan.mode === 'blocked') {
+        setMessage(plan.reason)
+        return
+      }
+      const r = plan.mode === 'preview'
+        ? await testServerCredentials(plan.request)
+        : await testServerConnection(serverId)
+      const unsaved = plan.mode === 'preview' ? ' Not saved yet.' : ''
+      setMessage(r.success ? `Connection OK (${r.latency_ms}ms).${unsaved}` : r.message)
     } catch (err) {
-      setMessage(err.response?.data?.detail || 'Test failed')
+      setMessage(apiErrorMessage(err, 'Test failed'))
     } finally {
       setTesting(false)
     }
@@ -56,15 +64,17 @@ export default function EditServer() {
   const handleSave = async (e) => {
     e.preventDefault()
     setMessage('')
+    const { payload, error } = buildUpdatePayload(original, form, { password, privateKey })
+    if (error) {
+      setMessage(error)
+      return
+    }
     try {
-      const payload = { ...form }
-      if (password) payload.password = password
-      if (privateKey) payload.private_key = privateKey
       await updateServer(serverId, payload)
       setMessage('Server updated successfully.')
       setTimeout(() => navigate(`/servers/${serverId}`), 800)
     } catch (err) {
-      setMessage(err.response?.data?.detail || 'Update failed')
+      setMessage(apiErrorMessage(err, 'Update failed'))
     }
   }
 

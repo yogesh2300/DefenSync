@@ -98,23 +98,30 @@ class BehavioralAnalysisService:
             stmt = stmt.where(SecurityEvent.owner_id == owner_id)
         return [_event_summary(event) for event in self._session.scalars(stmt).all()]
 
-    def summary(self, *, owner_id: str | None = None) -> dict[str, Any]:
-        base = [
+    def summary(self, *, owner_id: str | None = None, account_id: str | None = None) -> dict[str, Any]:
+        from backend.database.models import DATA_SCOPE_GLOBAL, DATA_SCOPE_PRIVATE
+
+        global_base = [
+            SecurityEvent.data_scope == DATA_SCOPE_GLOBAL,
             SecurityEvent.source_type == SOURCE_TYPE,
             SecurityEvent.dataset_name == DATASET_NAME,
             SecurityEvent.event_type == EVENT_TYPE,
         ]
-        if owner_id:
-            base.append(SecurityEvent.owner_id == owner_id)
+        account_base = [SecurityEvent.data_scope == DATA_SCOPE_PRIVATE, SecurityEvent.source_type == SOURCE_TYPE]
+        if account_id:
+            account_base.append(SecurityEvent.account_id == account_id)
+        elif owner_id:
+            account_base.append(SecurityEvent.owner_id == owner_id)
 
-        def count(*extra: Any) -> int:
-            return self._session.scalar(select(func.count(SecurityEvent.id)).where(*base, *extra)) or 0
+        def count(clauses) -> int:
+            return self._session.scalar(select(func.count(SecurityEvent.id)).where(*clauses)) or 0
 
-        avg = self._session.scalar(select(func.avg(SecurityEvent.behavioral_risk_score)).where(*base)) or 0
-        profiles = self._session.scalar(select(func.count(BehaviorProfile.id)).where(*( [BehaviorProfile.owner_id == owner_id] if owner_id else [] ))) or 0
-        insufficient = self._session.scalar(select(func.count(BehaviorProfile.id)).where(BehaviorProfile.status == "INSUFFICIENT_DATA", *( [BehaviorProfile.owner_id == owner_id] if owner_id else [] ))) or 0
+        avg = self._session.scalar(select(func.avg(SecurityEvent.behavioral_risk_score)).where(*global_base)) or 0
+        profile_filter = [BehaviorProfile.account_id == account_id] if account_id else ([BehaviorProfile.owner_id == owner_id] if owner_id else [])
+        profiles = self._session.scalar(select(func.count(BehaviorProfile.id)).where(*profile_filter)) or 0
+        insufficient = self._session.scalar(select(func.count(BehaviorProfile.id)).where(BehaviorProfile.status == "INSUFFICIENT_DATA", *profile_filter)) or 0
         highest = self._session.scalars(
-            select(SecurityEvent).where(*base).order_by(desc(SecurityEvent.behavioral_risk_score)).limit(5)
+            select(SecurityEvent).where(*global_base).order_by(desc(SecurityEvent.behavioral_risk_score)).limit(5)
         ).all()
         signal_counter: Counter[str] = Counter()
         for event in highest:
@@ -124,16 +131,20 @@ class BehavioralAnalysisService:
             except Exception:
                 pass
         return {
-            "total_behavioral_events": count(),
-            "normal_events": count(SecurityEvent.behavioral_classification == "NORMAL"),
-            "anomalous_events": count(SecurityEvent.behavioral_classification != "NORMAL"),
-            "over_efficiency_events": count(SecurityEvent.behavioral_classification == "OVER_EFFICIENCY"),
-            "automated_activity_events": count(SecurityEvent.behavioral_classification == "AUTOMATED_ACTIVITY"),
+            "total_behavioral_events": count(global_base),
+            "scope": "GLOBAL",
+            "account_local_behavioral_events": count(account_base),
+            "normal_events": count([*global_base, SecurityEvent.behavioral_classification == "NORMAL"]),
+            "anomalous_events": count([*global_base, SecurityEvent.behavioral_classification != "NORMAL"]),
+            "over_efficiency_events": count([*global_base, SecurityEvent.behavioral_classification == "OVER_EFFICIENCY"]),
+            "automated_activity_events": count([*global_base, SecurityEvent.behavioral_classification == "AUTOMATED_ACTIVITY"]),
             "users_profiled": profiles,
+            "account_local_profiles": profiles,
             "profiles_with_insufficient_data": insufficient,
             "average_behavioral_risk": round(float(avg), 2),
             "highest_risk_users": [_event_summary(event) for event in highest],
             "most_common_triggered_signals": signal_counter.most_common(10),
+            "note": "total_behavioral_events is GLOBAL intelligence. users_profiled are account-local Linux profiles.",
         }
 
 

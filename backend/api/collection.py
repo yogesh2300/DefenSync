@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from backend.api.dependencies import get_current_user, get_db
 from backend.core.exceptions import AuthorizationError, ValidationException
+from backend.database.scope import user_can_access_server
 from backend.core.logging import get_logger
 from backend.collector.log_sources import DEFAULT_LOG_SOURCES
 from backend.database.models import User
@@ -51,6 +52,11 @@ class CollectionRunResponse(BaseModel):
     duration_ms: int
     server_id: str
     errors: list[dict[str, Any]] = Field(default_factory=list)
+    skipped_sources: dict[str, str] = Field(default_factory=dict)
+    detection: dict[str, Any] | None = Field(
+        None,
+        description="Present after a successful collection when post-collection detection was queued",
+    )
 
 
 def get_server_service(db: Session = Depends(get_db)) -> ServerService:
@@ -75,7 +81,7 @@ def run_collection(
     """
     log_sources = frozenset(request.log_sources) if request.log_sources else DEFAULT_LOG_SOURCES
     server = servers.get_server(request.server_id)
-    if current_user.role.upper() != "ADMIN" and (server.owner_id or server.created_by) != current_user.id:
+    if not user_can_access_server(current_user, server):
         raise AuthorizationError("You do not have access to this server.")
     logger.info("User %s collection run server_id=%s", current_user.username, request.server_id)
     try:
@@ -98,4 +104,6 @@ def run_collection(
         duration_ms=stats.get("duration_ms", 0),
         server_id=request.server_id,
         errors=stats.get("errors", []),
+        skipped_sources=stats.get("skipped_sources") or {},
+        detection=stats.get("detection"),
     )

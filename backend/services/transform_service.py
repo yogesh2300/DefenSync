@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, tzinfo
 from typing import Any, Literal
 
 from backend.core.logging import get_logger
-from backend.normalizer.event_normalizer import EventNormalizer
+from backend.core.timestamps import collection_now
+from backend.normalizer.event_normalizer import DefaultTimestampNormalizer, EventNormalizer
 from backend.normalizer.event_types import NormalizedSecurityEvent
 from backend.parser.engine import parse_audit_line, parse_logs, parse_secure_line
 from backend.risk.engine import RiskEngine
@@ -14,6 +16,8 @@ from backend.risk.engine import RiskEngine
 logger = get_logger(__name__)
 
 LogSource = Literal["secure", "audit"]
+# A recognised log line the normalizer deliberately does not turn into an event.
+DECLINED_BY_NORMALIZER = "Event type not supported by normalizer"
 
 
 class TransformService:
@@ -30,18 +34,26 @@ class TransformService:
         risk_engine: RiskEngine | None = None,
         default_hostname: str = "unknown",
     ) -> None:
+        self._collected_at = collection_now()
         self._normalizer = normalizer or EventNormalizer(
             default_hostname=default_hostname,
             score_risk=False,
+            timestamp_normalizer=DefaultTimestampNormalizer(self._collected_at),
         )
         self._risk_engine = risk_engine or RiskEngine()
         self._default_hostname = default_hostname
 
-    def _normalizer_for(self, hostname: str | None = None) -> EventNormalizer:
+    def _normalizer_for(
+        self,
+        hostname: str | None = None,
+        host_tz: tzinfo | None = None,
+        collected_at: datetime | None = None,
+    ) -> EventNormalizer:
         """Return a classification-only normalizer for the pipeline path."""
         return EventNormalizer(
             default_hostname=hostname or self._default_hostname,
             score_risk=False,
+            timestamp_normalizer=DefaultTimestampNormalizer(collected_at or collection_now(), host_tz=host_tz),
         )
 
     def normalize_parsed(self, parsed: dict[str, Any]) -> NormalizedSecurityEvent | None:
@@ -85,7 +97,7 @@ class TransformService:
                     continue
                 event = self._normalizer.normalize(parsed)
                 if event is None:
-                    errors.append({"index": index, "error": "Event type not supported by normalizer"})
+                    errors.append({"index": index, "error": DECLINED_BY_NORMALIZER})
                     continue
                 normalized.append(event)
             except Exception as exc:
@@ -100,10 +112,16 @@ class TransformService:
         secure_lines: list[str] | None = None,
         audit_lines: list[str] | None = None,
         hostname: str | None = None,
+        host_tz: tzinfo | None = None,
+        collected_at: datetime | None = None,
     ) -> tuple[list[NormalizedSecurityEvent], list[dict[str, Any]]]:
-        """Parse and normalize secure and audit log line lists."""
-        if hostname:
-            self._normalizer = self._normalizer_for(hostname)
+        """Parse and normalize secure and audit log line lists.
+
+        host_tz is the Linux host zone used for wall-clock times without an offset.
+        collected_at is the collection time of this run (default: now).
+        """
+        if hostname or host_tz or collected_at:
+            self._normalizer = self._normalizer_for(hostname, host_tz, collected_at)
 
         parsed_events = parse_logs(secure_lines or [], audit_lines or [])
         normalized, errors = self.normalize_batch(parsed_events)

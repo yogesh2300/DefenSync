@@ -36,7 +36,14 @@ class IngestionService:
         else:
             parsed_ts = datetime.now(timezone.utc)
 
-        h_val = crud.calculate_event_hash(raw_log, parsed_ts)
+        h_val = crud.calculate_event_hash(
+            raw_log,
+            parsed_ts,
+            server_id=event_data.get("server_id"),
+            event_type=event_data.get("event_type"),
+            username=event_data.get("username"),
+            source_ip=event_data.get("source_ip"),
+        )
         if crud.get_event_by_hash(self._session, h_val) is not None:
             raise DuplicateResourceError(f"Duplicate security event detected with hash '{h_val}'.")
 
@@ -93,7 +100,14 @@ class IngestionService:
                 errors.append({"index": index, "error": "Missing event_type"})
                 continue
 
-            h_val = crud.calculate_event_hash(raw_log, parsed_ts)
+            h_val = crud.calculate_event_hash(
+                raw_log,
+                parsed_ts,
+                server_id=event.get("server_id"),
+                event_type=event.get("event_type"),
+                username=event.get("username"),
+                source_ip=event.get("source_ip"),
+            )
             
             norm_event = dict(event)
             norm_event["timestamp"] = parsed_ts
@@ -124,6 +138,7 @@ class IngestionService:
         records_to_insert = []
         seen_hashes = set()
         seen_ids = set()
+        collection_updates: dict[str, datetime] = {}
 
         for index, payload, h_val, eid in valid_payloads:
             eid_str = str(eid) if eid else None
@@ -136,6 +151,11 @@ class IngestionService:
 
             if is_dup:
                 duplicates += 1
+                collected = payload.get("collection_timestamp")
+                if collected:
+                    if not isinstance(collected, datetime):
+                        collected = crud._parse_timestamp(collected)
+                    collection_updates[h_val] = collected
                 errors.append({"index": index, "error": "Duplicate event ignored"})
             else:
                 seen_hashes.add(h_val)
@@ -153,6 +173,14 @@ class IngestionService:
                 self._session.rollback()
                 logger.error("Failed to commit bulk event ingestion transaction: %s", str(e))
                 raise DatabaseException(f"Failed to commit bulk event ingestion transaction: {str(e)}")
+
+        if collection_updates:
+            try:
+                crud.touch_collection_timestamps(self._session, collection_updates)
+                self._session.commit()
+            except Exception as e:
+                self._session.rollback()
+                logger.warning("Failed to refresh collection timestamps on duplicates: %s", e)
 
         return {
             "inserted": inserted,

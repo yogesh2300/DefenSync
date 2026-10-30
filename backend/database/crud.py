@@ -8,11 +8,14 @@ import hashlib
 from datetime import datetime, timezone, timedelta
 from typing import Any, Iterable, Mapping
 
-from sqlalchemy import ColumnElement, case, desc, or_, select, func, delete
+from sqlalchemy import ColumnElement, and_, case, desc, or_, select, func, delete
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
-from backend.database.models import SecurityEvent, User
+from backend.core.environments import CLOUD
+from backend.database.models import DATA_SCOPE_GLOBAL, DATA_SCOPE_PRIVATE, SecurityEvent, User
+from backend.database.scope import infer_data_scope, with_environment
+from backend.normalizer.event_types import COLLECTOR_ORIGIN_MARKER, NON_SECURITY_EVENT_TYPES, EventType
 
 
 def insert_event(session: Session, event: Mapping[str, Any]) -> SecurityEvent:
@@ -37,12 +40,23 @@ def insert_many(session: Session, events: Iterable[Mapping[str, Any]]) -> list[S
     return records
 
 
+def _apply_scope(stmt, *, owner_id: str | None = None, server_id: str | None = None, visibility=None):
+    if visibility is not None:
+        stmt = stmt.where(visibility)
+    elif owner_id:
+        stmt = stmt.where(SecurityEvent.owner_id == owner_id)
+    if server_id:
+        stmt = stmt.where(SecurityEvent.server_id == server_id)
+    return stmt
+
+
 def get_recent_events(
     session: Session,
     *,
     limit: int = 100,
     owner_id: str | None = None,
     server_id: str | None = None,
+    visibility=None,
 ) -> list[SecurityEvent]:
     """Return the most recent events ordered by event timestamp."""
     stmt = (
@@ -50,10 +64,7 @@ def get_recent_events(
         .order_by(desc(SecurityEvent.timestamp), desc(SecurityEvent.id))
         .limit(limit)
     )
-    if owner_id:
-        stmt = stmt.where(SecurityEvent.owner_id == owner_id)
-    if server_id:
-        stmt = stmt.where(SecurityEvent.server_id == server_id)
+    stmt = _apply_scope(stmt, owner_id=owner_id, server_id=server_id, visibility=visibility)
     return list(session.scalars(stmt).all())
 
 
@@ -64,18 +75,18 @@ def get_high_risk_events(
     limit: int = 100,
     owner_id: str | None = None,
     server_id: str | None = None,
+    visibility=None,
+    offset: int = 0,
 ) -> list[SecurityEvent]:
     """Return events at or above the configured risk score threshold."""
     stmt = (
         select(SecurityEvent)
         .where(SecurityEvent.risk_score >= min_score)
         .order_by(desc(SecurityEvent.risk_score), desc(SecurityEvent.timestamp))
+        .offset(offset)
         .limit(limit)
     )
-    if owner_id:
-        stmt = stmt.where(SecurityEvent.owner_id == owner_id)
-    if server_id:
-        stmt = stmt.where(SecurityEvent.server_id == server_id)
+    stmt = _apply_scope(stmt, owner_id=owner_id, server_id=server_id, visibility=visibility)
     return list(session.scalars(stmt).all())
 
 
@@ -157,11 +168,10 @@ def get_events_by_hostname(
     return list(session.scalars(stmt).all())
 
 
-def count_events(session: Session, *, owner_id: str | None = None) -> int:
+def count_events(session: Session, *, owner_id: str | None = None, visibility=None, server_id: str | None = None) -> int:
     """Return total number of security events."""
     stmt = select(func.count()).select_from(SecurityEvent)
-    if owner_id:
-        stmt = stmt.where(SecurityEvent.owner_id == owner_id)
+    stmt = _apply_scope(stmt, owner_id=owner_id, server_id=server_id, visibility=visibility)
     return session.scalar(stmt) or 0
 
 
@@ -169,6 +179,8 @@ def count_high_risk_events(
     session: Session,
     min_score: int = 70,
     owner_id: str | None = None,
+    visibility=None,
+    server_id: str | None = None,
 ) -> int:
     """Return number of high-risk security events."""
     stmt = (
@@ -176,8 +188,7 @@ def count_high_risk_events(
         .select_from(SecurityEvent)
         .where(SecurityEvent.risk_score >= min_score)
     )
-    if owner_id:
-        stmt = stmt.where(SecurityEvent.owner_id == owner_id)
+    stmt = _apply_scope(stmt, owner_id=owner_id, server_id=server_id, visibility=visibility)
     return session.scalar(stmt) or 0
 
 
@@ -221,26 +232,39 @@ def count_unique_ips(session: Session, *, owner_id: str | None = None) -> int:
     return session.scalar(stmt) or 0
 
 
+_LOGIN_EVENT_TYPES = {CLOUD: ("CLOUD_LOGIN_FAILURE", "CLOUD_LOGIN_SUCCESS")}
+
+
 def dashboard_summary(
     session: Session,
     *,
     owner_id: str | None = None,
     server_id: str | None = None,
+    visibility=None,
+    environment: str | None = None,
 ) -> dict[str, int]:
-    """Return summary statistics for the dashboard."""
+    """Return summary statistics for the dashboard, optionally for one environment only.
+
+    Security metrics exclude System Snapshot / System Event rows, which are counted
+    separately. Collector-generated SSH events stay in the security metrics (they are
+    real sshd events) and are also counted on their own.
+    """
+    failed_type, success_type = _LOGIN_EVENT_TYPES.get(environment, ("Failed Login", "Successful Login"))
+    is_security = SecurityEvent.event_type.notin_(tuple(NON_SECURITY_EVENT_TYPES))
     stmt = select(
-        func.count(SecurityEvent.id),
-        func.sum(case((SecurityEvent.risk_score >= 70, 1), else_=0)),
-        func.sum(case((SecurityEvent.event_type == "Failed Login", 1), else_=0)),
-        func.sum(case((SecurityEvent.event_type == "Successful Login", 1), else_=0)),
-        func.count(func.distinct(SecurityEvent.username)),
-        func.count(func.distinct(SecurityEvent.source_ip)),
-        func.avg(SecurityEvent.risk_score),
+        func.sum(case((is_security, 1), else_=0)),
+        func.sum(case((and_(is_security, SecurityEvent.risk_score >= 70), 1), else_=0)),
+        func.sum(case((SecurityEvent.event_type == failed_type, 1), else_=0)),
+        func.sum(case((SecurityEvent.event_type == success_type, 1), else_=0)),
+        func.count(func.distinct(case((is_security, SecurityEvent.username)))),
+        func.count(func.distinct(case((is_security, SecurityEvent.source_ip)))),
+        func.avg(case((is_security, SecurityEvent.risk_score))),
+        func.max(case((is_security, SecurityEvent.risk_score))),
+        func.sum(case((SecurityEvent.event_type == EventType.SYSTEM_SNAPSHOT.value, 1), else_=0)),
+        func.sum(case((SecurityEvent.event_type == EventType.SYSTEM_EVENT.value, 1), else_=0)),
+        func.sum(case((SecurityEvent.normalized_data.like(f"%{COLLECTOR_ORIGIN_MARKER}%"), 1), else_=0)),
     )
-    if owner_id:
-        stmt = stmt.where(SecurityEvent.owner_id == owner_id)
-    if server_id:
-        stmt = stmt.where(SecurityEvent.server_id == server_id)
+    stmt = _apply_scope(stmt, owner_id=owner_id, server_id=server_id, visibility=with_environment(visibility, environment))
     row = session.execute(stmt).one()
     avg_risk = row[6] or 0
     return {
@@ -251,6 +275,10 @@ def dashboard_summary(
         "unique_users": int(row[4] or 0),
         "unique_ips": int(row[5] or 0),
         "average_risk_score": int(round(avg_risk)),
+        "max_risk_score": int(row[7] or 0),
+        "system_snapshots": int(row[8] or 0),
+        "system_events": int(row[9] or 0),
+        "collector_generated_events": int(row[10] or 0),
     }
 
 
@@ -291,10 +319,17 @@ def _event_filter_clauses(
     minimum_behavioral_risk: int | None = None,
     actor_id: str | None = None,
     session_id: str | None = None,
+    event_ids: list[str] | None = None,
+    visibility=None,
 ) -> list[ColumnElement[bool]]:
     """Build shared WHERE clauses for SecurityEvent queries."""
     clauses: list[ColumnElement[bool]] = []
-
+    if visibility is not None:
+        clauses.append(visibility)
+    elif owner_id:
+        clauses.append(SecurityEvent.owner_id == owner_id)
+    if event_ids:
+        clauses.append(SecurityEvent.event_id.in_(tuple(event_ids)))
     if event_type:
         clauses.append(SecurityEvent.event_type == event_type)
     if severity:
@@ -309,8 +344,6 @@ def _event_filter_clauses(
         clauses.append(SecurityEvent.hostname == hostname)
     if server_id:
         clauses.append(SecurityEvent.server_id == server_id)
-    if owner_id:
-        clauses.append(SecurityEvent.owner_id == owner_id)
     if start_time:
         clauses.append(SecurityEvent.timestamp >= start_time)
     if end_time:
@@ -361,8 +394,24 @@ def _apply_event_filters(stmt: Select[Any], filters: list[ColumnElement[bool]]) 
     for clause in filters:
         stmt = stmt.where(clause)
     return stmt
+RECORD_KIND_FILTERS = ("SECURITY_EVENT", "SYSTEM_EVENT", "SYSTEM_SNAPSHOT", "NOT_SNAPSHOT")
+
+
+def _record_kind_clause(record_kind: str | None) -> ColumnElement[bool] | None:
+    """Record kinds map onto event types: snapshots and system events have their own types."""
+    if record_kind == "SYSTEM_SNAPSHOT":
+        return SecurityEvent.event_type == EventType.SYSTEM_SNAPSHOT.value
+    if record_kind == "SYSTEM_EVENT":
+        return SecurityEvent.event_type == EventType.SYSTEM_EVENT.value
+    if record_kind == "SECURITY_EVENT":
+        return SecurityEvent.event_type.notin_(tuple(NON_SECURITY_EVENT_TYPES))
+    if record_kind == "NOT_SNAPSHOT":
+        return SecurityEvent.event_type != EventType.SYSTEM_SNAPSHOT.value
+    return None
+
+
 def _apply_event_sort(stmt: Select[Any], *, sort_order: str = "newest") -> Select[Any]:
-    """Apply timestamp sort order to a SecurityEvent select statement."""
+    """Order by events.timestamp: source occurrence time for genuine events, observation time for snapshots."""
     if sort_order == "oldest":
         return stmt.order_by(SecurityEvent.timestamp.asc(), SecurityEvent.id.asc())
     return stmt.order_by(desc(SecurityEvent.timestamp), desc(SecurityEvent.id))
@@ -396,6 +445,9 @@ def query_events(
     minimum_behavioral_risk: int | None = None,
     actor_id: str | None = None,
     session_id: str | None = None,
+    event_ids: list[str] | None = None,
+    visibility=None,
+    record_kind: str | None = None,
     sort_order: str = "newest",
 ) -> list[SecurityEvent]:
     """Query, filter, search, and paginate security events."""
@@ -423,7 +475,12 @@ def query_events(
         minimum_behavioral_risk=minimum_behavioral_risk,
         actor_id=actor_id,
         session_id=session_id,
+        event_ids=event_ids,
+        visibility=visibility,
     )
+    record_kind_clause = _record_kind_clause(record_kind)
+    if record_kind_clause is not None:
+        filters.append(record_kind_clause)
     stmt = _apply_event_filters(select(SecurityEvent), filters)
     stmt = _apply_event_sort(stmt, sort_order=sort_order)
     stmt = stmt.offset(offset).limit(limit)
@@ -456,6 +513,7 @@ def count_query_events(
     minimum_behavioral_risk: int | None = None,
     actor_id: str | None = None,
     session_id: str | None = None,
+    visibility=None,
 ) -> int:
     """Return the total number of security events matching filter criteria."""
     filters = _event_filter_clauses(
@@ -482,6 +540,7 @@ def count_query_events(
         minimum_behavioral_risk=minimum_behavioral_risk,
         actor_id=actor_id,
         session_id=session_id,
+        visibility=visibility,
     )
     stmt = _apply_event_filters(select(func.count()).select_from(SecurityEvent), filters)
     return session.scalar(stmt) or 0
@@ -557,11 +616,43 @@ def delete_events(
     return result.rowcount or 0
 
 
-def calculate_event_hash(raw_log: str, timestamp: datetime) -> str:
-    """Generate SHA-256 hash of raw log and timestamp for deduplication."""
+def calculate_event_hash(
+    raw_log: str,
+    timestamp: datetime,
+    *,
+    server_id: str | None = None,
+    event_type: str | None = None,
+    username: str | None = None,
+    source_ip: str | None = None,
+) -> str:
+    """Fingerprint an event by source occurrence identity, not collection time."""
     ts_str = timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp)
-    data = f"{raw_log}_{ts_str}".encode("utf-8")
+    data = "|".join([
+        str(server_id or ""),
+        str(event_type or ""),
+        str(username or ""),
+        str(source_ip or ""),
+        ts_str,
+        raw_log or "",
+    ]).encode("utf-8")
     return hashlib.sha256(data).hexdigest()
+
+
+def insert_events_with_hash(session: Session, events: Iterable[Mapping[str, Any]]) -> list[SecurityEvent]:
+    """Persist events that carry their own namespaced dedup hash (e.g. account-scoped Azure telemetry).
+
+    calculate_event_hash, insert_many, and every existing row are unaffected.
+    """
+    records = []
+    for event in events:
+        record = _to_model(event)
+        record.hash = str(event["hash"])
+        records.append(record)
+    if not records:
+        return []
+    session.add_all(records)
+    session.flush()
+    return records
 
 
 def get_existing_event_hashes(session: Session, hashes: list[str]) -> set[str]:
@@ -586,17 +677,43 @@ def get_event_by_hash(session: Session, hash_val: str) -> SecurityEvent | None:
         return None
 
 
+def touch_collection_timestamps(session: Session, updates: dict[str, datetime]) -> int:
+    """Refresh collection time on duplicate historical events without changing occurrence time."""
+    if not updates:
+        return 0
+    events = list(session.scalars(select(SecurityEvent).where(SecurityEvent.hash.in_(list(updates)))).all())
+    for event in events:
+        collected = updates.get(event.hash)
+        if collected is None:
+            continue
+        event.collection_timestamp = collected
+    return len(events)
+
+
 def _to_model(event: Mapping[str, Any]) -> SecurityEvent:
     """Convert an event mapping into a SecurityEvent ORM instance."""
     payload = _normalize_payload(event)
     ts = _parse_timestamp(payload["timestamp"])
     raw_log = str(payload["raw_log"])
-    h_val = payload.get("hash") or calculate_event_hash(raw_log, ts)
+    h_val = payload.get("hash") or calculate_event_hash(
+        raw_log,
+        ts,
+        server_id=payload.get("server_id"),
+        event_type=str(payload["event_type"]),
+        username=payload.get("username"),
+        source_ip=payload.get("source_ip"),
+    )
+    collection_ts = payload.get("collection_timestamp")
     return SecurityEvent(
         event_id=str(payload["event_id"]),
         server_id=payload.get("server_id"),
         owner_id=payload.get("owner_id"),
+        account_id=None if infer_data_scope(payload.get("data_origin"), payload.get("data_scope")) == DATA_SCOPE_GLOBAL else payload.get("account_id"),
+        data_scope=infer_data_scope(payload.get("data_origin"), payload.get("data_scope")),
         timestamp=ts,
+        collection_timestamp=_parse_timestamp(collection_ts) if collection_ts else None,
+        timestamp_source=payload.get("timestamp_source"),
+        created_at=_parse_timestamp(payload["created_at"]) if payload.get("created_at") else datetime.now(timezone.utc),
         hostname=str(payload["hostname"]),
         username=payload.get("username"),
         source_ip=payload.get("source_ip"),
@@ -662,7 +779,12 @@ def _normalize_payload(event: Mapping[str, Any]) -> dict[str, Any]:
         "event_id": payload.get("event_id") or str(uuid.uuid4()),
         "server_id": payload.get("server_id"),
         "owner_id": payload.get("owner_id"),
+        "account_id": payload.get("account_id"),
+        "data_scope": payload.get("data_scope"),
         "timestamp": payload["timestamp"],
+        "collection_timestamp": payload.get("collection_timestamp") or metadata.get("collection_timestamp"),
+        "timestamp_source": payload.get("timestamp_source") or metadata.get("timestamp_source"),
+        "created_at": payload.get("created_at"),
         "hostname": payload.get("hostname") or "unknown",
         "username": payload.get("username"),
         "source_ip": payload.get("source_ip"),
@@ -732,8 +854,8 @@ def get_user_by_username(session: Session, username: str) -> User | None:
 
 
 def get_user_by_email(session: Session, email: str) -> User | None:
-    """Retrieve a user by their unique email."""
-    stmt = select(User).where(User.email == email)
+    """Retrieve a user by their unique email (case-insensitive)."""
+    stmt = select(User).where(func.lower(User.email) == (email or "").strip().lower())
     return session.scalar(stmt)
 
 

@@ -36,12 +36,25 @@ class BehavioralBaselineService:
             .distinct()
         ).all()
         profiles = [self.build(identity_key=row[0], server_id=row[1], owner_id=owner_id) for row in identities if row[0]]
+        linux_identities = self._session.execute(
+            select(SecurityEvent.username, SecurityEvent.server_id)
+            .where(SecurityEvent.source_type == "LINUX")
+            .where(SecurityEvent.risk_score <= self._settings.BEHAVIORAL_BASELINE_UPDATE_MAX_RISK)
+            .where(*([SecurityEvent.owner_id == owner_id] if owner_id else []))
+            .distinct()
+        ).all()
+        for username, server_id in linux_identities:
+            if not username:
+                continue
+            profiles.append(self.build_linux(identity_key=username, server_id=server_id, owner_id=owner_id))
         return {"profiles_processed": len(profiles), "profiles": [profile_to_dict(p) for p in profiles]}
 
     def build(self, *, identity_key: str, server_id: str | None = None, owner_id: str | None = None) -> BehaviorProfile:
         rows = self._normal_events(identity_key=identity_key, server_id=server_id, owner_id=owner_id)
         effective_owner = owner_id or (rows[0].owner_id if rows else None)
         profile = self._get_or_create(identity_key=identity_key, server_id=server_id, owner_id=effective_owner)
+        if getattr(rows[0] if rows else None, "account_id", None):
+            profile.account_id = rows[0].account_id
         profile.profile_sample_count = len(rows)
         if len(rows) < self._settings.BEHAVIORAL_MIN_BASELINE_SAMPLES:
             profile.status = "INSUFFICIENT_DATA"
@@ -69,9 +82,44 @@ class BehavioralBaselineService:
         self._session.commit()
         return profile
 
-    def list_profiles(self, *, owner_id: str | None = None) -> list[BehaviorProfile]:
-        stmt = select(BehaviorProfile).order_by(BehaviorProfile.identity_key)
+    def build_linux(self, *, identity_key: str, server_id: str | None = None, owner_id: str | None = None) -> BehaviorProfile:
+        """Baseline from live Linux observations. Does not invent typing-speed dataset features."""
+        stmt = select(SecurityEvent).where(
+            SecurityEvent.source_type == "LINUX",
+            SecurityEvent.username == identity_key,
+            SecurityEvent.risk_score <= self._settings.BEHAVIORAL_BASELINE_UPDATE_MAX_RISK,
+        )
+        if server_id:
+            stmt = stmt.where(SecurityEvent.server_id == server_id)
         if owner_id:
+            stmt = stmt.where(SecurityEvent.owner_id == owner_id)
+        rows = list(self._session.scalars(stmt).all())
+        profile = self._get_or_create(identity_key=identity_key, server_id=server_id, owner_id=owner_id or (rows[0].owner_id if rows else None))
+        profile.profile_sample_count = len(rows)
+        profile.linux_username = identity_key
+        profile.user_id = identity_key
+        hours = [int(row.login_hour) for row in rows if row.login_hour is not None]
+        if not hours:
+            hours = [row.timestamp.hour for row in rows if row.timestamp]
+        if len(rows) < self._settings.BEHAVIORAL_MIN_BASELINE_SAMPLES:
+            profile.status = "INSUFFICIENT_DATA"
+        else:
+            if hours:
+                profile.usual_login_start = max(0, min(hours))
+                profile.usual_login_end = min(23, max(hours))
+            profile.status = "ACTIVE"
+            profile.baseline_version = (profile.baseline_version or 0) + 1
+            profile.last_updated = datetime.now(timezone.utc)
+        profile.updated_at = datetime.now(timezone.utc)
+        self._session.add(profile)
+        self._session.commit()
+        return profile
+
+    def list_profiles(self, *, owner_id: str | None = None, account_id: str | None = None) -> list[BehaviorProfile]:
+        stmt = select(BehaviorProfile).order_by(BehaviorProfile.identity_key)
+        if account_id:
+            stmt = stmt.where(BehaviorProfile.account_id == account_id)
+        elif owner_id:
             stmt = stmt.where(BehaviorProfile.owner_id == owner_id)
         return list(self._session.scalars(stmt).all())
 

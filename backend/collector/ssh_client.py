@@ -6,10 +6,25 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator, List, Optional
 
+import io
 import paramiko
 import time
 
 from backend.collector.config import SSHConfig
+
+_KEY_TYPES = (paramiko.Ed25519Key, paramiko.ECDSAKey, paramiko.RSAKey)
+
+
+def load_private_key(content: str) -> paramiko.PKey:
+    """Parse an unencrypted OpenSSH/PEM private key in memory; raises ValueError if unusable."""
+    for key_type in _KEY_TYPES:
+        try:
+            return key_type.from_private_key(io.StringIO(content))
+        except paramiko.PasswordRequiredException as exc:
+            raise ValueError("Passphrase-protected private keys are not supported.") from exc
+        except (paramiko.SSHException, ValueError, TypeError, IndexError):
+            continue
+    raise ValueError("Private key could not be parsed (supported: Ed25519, ECDSA, RSA).")
 
 
 class SSHClient:
@@ -48,7 +63,9 @@ class SSHClient:
             "look_for_keys": False,
         }
 
-        if self._config.private_key_path:
+        if self._config.private_key:
+            connect_kwargs["pkey"] = load_private_key(self._config.private_key)
+        elif self._config.private_key_path:
             key_path = Path(self._config.private_key_path)
             connect_kwargs["key_filename"] = str(key_path)
         else:
@@ -77,7 +94,14 @@ class SSHClient:
         if self._sftp is None:
             raise RuntimeError("SSH client is not connected. Call connect() first.")
 
-        with self._sftp.open(remote_path, "r") as remote_file:
+        try:
+            handle = self._sftp.open(remote_path, "r")
+        except FileNotFoundError:
+            return []
+        except OSError:
+            return []
+
+        with handle as remote_file:
             text_lines = [
                 line.rstrip("\r\n")
                 for line in remote_file.readlines()
@@ -96,6 +120,18 @@ class SSHClient:
         del _stdin, stderr
         output = stdout.read().decode("utf-8", errors="replace")
         return [line.rstrip("\r\n") for line in output.splitlines() if line.strip()]
+
+    def run_remote_command_status(self, command: str, *, timeout: float = 30.0) -> tuple[int, list[str], str]:
+        """Execute a remote command and return (exit_status, stdout lines, stderr text)."""
+        if self._client is None:
+            raise RuntimeError("SSH client is not connected. Call connect() first.")
+        _stdin, stdout, stderr = self._client.exec_command(command, timeout=timeout)
+        del _stdin
+        output = stdout.read().decode("utf-8", errors="replace")
+        error_text = stderr.read().decode("utf-8", errors="replace").strip()
+        exit_status = stdout.channel.recv_exit_status()
+        lines = [line.rstrip("\r\n") for line in output.splitlines() if line.strip()]
+        return exit_status, lines, error_text
 
     @contextmanager
     def session(self) -> Generator["SSHClient", None, None]:

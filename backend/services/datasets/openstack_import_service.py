@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from backend.core.config import get_settings
 from backend.core.exceptions import ValidationException
 from backend.database import crud
-from backend.database.models import DatasetImport, SecurityEvent
+from backend.database.models import DATA_SCOPE_GLOBAL, DatasetImport, SecurityEvent
 from backend.parser.openstack_parser import (
     DATASET_NAME,
     DATA_ORIGIN,
@@ -185,6 +185,7 @@ class OpenStackImportService:
             "dataset": DATASET_NAME,
             "provider": PROVIDER,
             "total_openstack_events": int(total),
+            "public_openstack_events": int(total),
             "normal_labelled_events": int(normal),
             "anomalous_labelled_events": int(anomalous),
             "partially_parsed_events": int(partial),
@@ -444,13 +445,13 @@ class OpenStackImportService:
 
     @staticmethod
     def _openstack_clauses(*, owner_id: str | None = None) -> list[Any]:
-        clauses = [
+        del owner_id
+        return [
+            SecurityEvent.data_scope == DATA_SCOPE_GLOBAL,
             SecurityEvent.source_type == "CLOUD",
             SecurityEvent.provider == PROVIDER,
+            SecurityEvent.data_origin == DATA_ORIGIN,
         ]
-        if owner_id:
-            clauses.append(SecurityEvent.owner_id == owner_id)
-        return clauses
 
     @staticmethod
     def _event_distinct_stmt(column: Any, *, owner_id: str | None = None) -> Any:

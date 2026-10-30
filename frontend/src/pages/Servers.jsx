@@ -6,6 +6,8 @@ import {
   refreshServerStatus, testServerConnection, testServerCredentials,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import { addScreenExitPath, isAddScreen } from '../environment'
+import { combinedLinuxCollectionMessage } from '../servers/collectionFeedback'
 import PageHeader from '../components/ui/PageHeader'
 import Card from '../components/ui/Card'
 import Button from '../components/ui/Button'
@@ -182,7 +184,10 @@ export default function Servers() {
       setForm(emptyForm)
       setTestPassed(false)
       setShowRegister(false)
-      if (location.pathname.endsWith('/new')) navigate('/servers', { replace: true })
+      if (isAddScreen(location.pathname)) {
+        navigate(addScreenExitPath('created'), { replace: true })
+        return
+      }
       setMessage(`Server "${created.server_name}" saved and registered.`)
       await load()
     } catch (err) {
@@ -231,8 +236,7 @@ export default function Servers() {
   const collectFromServer = async (server) => {
     setMessage(`Collecting logs from ${server.server_name}...`)
     const r = await collectServer(server.id, { tail_lines: 500, log_sources: FULL_LOG_SOURCES })
-    const detectionNote = r.detection?.message ? ` — ${r.detection.message}` : ''
-    setMessage(`${server.server_name}: ${r.collected_events ?? r.inserted} events collected${detectionNote}`)
+    setMessage(combinedLinuxCollectionMessage(server.server_name, r))
   }
 
   const deleteServerById = async (server) => {
@@ -256,9 +260,14 @@ export default function Servers() {
       key: 'connection_state',
       label: 'Status',
       render: (s) => (
-        <HealthBadge healthStatus={s.health_status || s.status}>
-          {connectionLabel(s)}
-        </HealthBadge>
+        <div className="max-w-xs">
+          <HealthBadge healthStatus={s.health_status || s.status}>
+            {connectionLabel(s)}
+          </HealthBadge>
+          {!isServerOnline(s) && s.health_error_message && (
+            <p className="mt-1 text-[11px] leading-snug muted-text">{s.health_error_message}</p>
+          )}
+        </div>
       ),
     },
     {
@@ -314,8 +323,7 @@ export default function Servers() {
             onClick={() => runAction(s.id, async () => {
               setMessage(`Collecting logs from ${s.server_name}...`)
               const r = await collectServer(s.id, { tail_lines: 500, log_sources: FULL_LOG_SOURCES })
-              const detectionNote = r.detection?.message ? ` — ${r.detection.message}` : ''
-              setMessage(`${s.server_name}: ${r.collected_events ?? r.inserted} events collected${detectionNote}`)
+              setMessage(combinedLinuxCollectionMessage(s.server_name, r))
             })}
           >
             {actionId === s.id ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -491,7 +499,7 @@ export default function Servers() {
               <Button type="submit" disabled={!testPassed || saving}>
                 {saving ? 'Saving...' : 'Save Server'}
               </Button>
-          <Button type="button" variant="ghost" onClick={() => { setShowRegister(false); setForm(emptyForm); setTestPassed(false); if (location.pathname.endsWith('/new')) navigate('/servers') }}>
+          <Button type="button" variant="ghost" onClick={() => { setShowRegister(false); setForm(emptyForm); setTestPassed(false); if (isAddScreen(location.pathname)) navigate(addScreenExitPath('cancelled'), { replace: true }) }}>
                 Cancel
               </Button>
               {testPassed && (
