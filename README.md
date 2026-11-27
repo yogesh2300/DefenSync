@@ -30,7 +30,7 @@ DefenSync provides separate monitoring workspaces for Linux and Cloud environmen
 ### Linux Security Dashboard
 
 <p align="center">
-  <img src="imgs/linux-dashboard.png" width="100%" alt="DefenSync Linux Security Dashboard" />
+  <img src="imgs/Linux Dashboard.png" width="100%" alt="DefenSync Linux Security Dashboard" />
 </p>
 
 ### Cloud Security Dashboard
