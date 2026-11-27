@@ -42,7 +42,7 @@ DefenSync provides separate monitoring workspaces for Linux and Cloud environmen
 ### Linux Alert Monitoring
 
 <p align="center">
-  <img src="imgs/linux-alerts.png" width="100%" alt="DefenSync Linux Alert Monitoring" />
+  <img src="imgs/Linux Alert Detection.png" width="100%" alt="DefenSync Linux Alert Monitoring" />
 </p>
 
 ### Cloud Threat Intelligence
