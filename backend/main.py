@@ -16,6 +16,7 @@ from backend.core.exceptions import register_exception_handlers
 from backend.core.logging import configure_logging, get_logger
 
 from backend.bootstrap.default_admin import ensure_default_admin
+from backend.services.mfa.otp_service import delivery_configuration_warning
 from backend.services.scheduler_service import start_scheduler, stop_scheduler
 from backend.services.health_engine import start_health_engine, stop_health_engine
 from backend.database.connection import get_engine
@@ -40,15 +41,56 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting DefenSync API...")
 
-    # Create all database tables
-    metadata_tables = sorted(Base.metadata.tables.keys())
-    print(f"SQLAlchemy metadata tables before create_all: {metadata_tables}")
-    logger.info("SQLAlchemy metadata tables before create_all: %s", metadata_tables)
-    Base.metadata.create_all(bind=get_engine())
+    # -------------------------------------------------------------------------
+    # Database startup: verify connection, then ensure schema is up to date
+    # -------------------------------------------------------------------------
+    engine = get_engine()
+    try:
+        from sqlalchemy import text as _text, inspect as _inspect
+        with engine.connect() as conn:
+            conn.execute(_text("SELECT 1"))
+        logger.info(
+            "Database connection verified successfully. host=%s port=%s db=%s user=%s",
+            settings.DB_HOST,
+            settings.DB_PORT,
+            settings.DB_NAME,
+            settings.DB_USER,
+        )
+    except Exception as _db_exc:
+        logger.critical(
+            "Database connection FAILED at startup. host=%s port=%s db=%s user=%s. "
+            "Update DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD in the project-root .env "
+            "(not backend/.env). Error type: %s",
+            settings.DB_HOST,
+            settings.DB_PORT,
+            settings.DB_NAME,
+            settings.DB_USER,
+            type(_db_exc).__name__,
+        )
+        raise RuntimeError(
+            "PostgreSQL authentication or connection failed. "
+            "Set the local DB_* values in the project-root .env file."
+        ) from _db_exc
+
+    expected_tables = sorted(Base.metadata.tables.keys())
+    logger.info("Expected ORM tables: %s", expected_tables)
+
+    Base.metadata.create_all(bind=engine)
+
+    # Verify all expected tables now exist in the database
+    inspector = _inspect(engine)
+    existing_tables = sorted(inspector.get_table_names())
+    missing = [t for t in expected_tables if t not in existing_tables]
+    if missing:
+        logger.error("The following tables are MISSING from the database after create_all: %s", missing)
+    else:
+        logger.info("All required tables present in database: %s", expected_tables)
 
     ensure_default_admin()
+    mfa_warning = delivery_configuration_warning()
+    if mfa_warning:
+        logger.warning(mfa_warning)
 
-    logger.info("Database tables verified. Registered metadata tables: %s", sorted(Base.metadata.tables.keys()))
     start_scheduler()
     start_health_engine()
 
@@ -140,10 +182,19 @@ app = create_app()
 
 if __name__ == "__main__":
     logger.info("Starting Uvicorn development server...")
-
-    uvicorn.run(
-        "backend.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=settings.DEBUG,
-    )
+    try:
+        uvicorn.run(
+            "backend.main:app",
+            host="0.0.0.0",
+            port=8000,
+            reload=settings.DEBUG,
+        )
+    except OSError as exc:
+        winerr = getattr(exc, "winerror", None) or getattr(exc, "errno", None)
+        if winerr in {10048, 98}:
+            logger.critical(
+                "Port 8000 is already in use. Another DefenSync/Uvicorn process is running. "
+                "Stop it, then retry: netstat -ano | findstr :8000   then   taskkill /PID <pid> /F"
+            )
+            raise SystemExit(1) from exc
+        raise

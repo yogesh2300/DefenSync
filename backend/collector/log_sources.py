@@ -24,9 +24,9 @@ class LogSourceDefinition:
 def _cmd(name: str) -> str:
     """Return a sanitized read-only shell command."""
     allowed = {
-        "journalctl": "journalctl -n 500 --no-pager 2>/dev/null || true",
-        "last": "last 2>/dev/null || true",
-        "lastb": "lastb 2>/dev/null || true",
+        "journalctl": "journalctl -n {tail} --output=short-iso --no-pager 2>/dev/null || true",
+        "last": "last -F 2>/dev/null || last 2>/dev/null || true",
+        "lastb": "lastb -F 2>/dev/null || lastb 2>/dev/null || true",
         "who": "who 2>/dev/null || true",
         "w": "w 2>/dev/null || true",
         "uptime": "uptime 2>/dev/null || true",
@@ -62,9 +62,18 @@ LOG_SOURCE_CATALOG: dict[str, LogSourceDefinition] = {
 }
 
 DEFAULT_LOG_SOURCES = frozenset({
-    "journalctl", "last", "lastb", "who", "w", "uptime",
+    "secure", "auth", "audit", "journalctl",
+    "last", "lastb", "who", "w", "uptime",
     "free", "df", "ps", "ss", "hostnamectl", "uname",
 })
+
+# Read-only, no root: how the host sees this SSH session and the host's clock zone.
+HOST_CONTEXT_COMMAND = (
+    "printf 'ssh_connection=%s\\n' \"$SSH_CONNECTION\"; "
+    "printf 'utc_offset=%s\\n' \"$(date +%z)\"; "
+    "printf 'timezone=%s\\n' \"$(timedatectl show -p Timezone --value 2>/dev/null"
+    " || readlink /etc/localtime 2>/dev/null || cat /etc/timezone 2>/dev/null)\""
+)
 
 # Legacy aliases used by existing collection API
 LEGACY_SOURCE_ALIASES = {

@@ -13,6 +13,7 @@ const STYLES = {
   timeout: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
   unreachable: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
   authentication_failed: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
+  credential_error: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
   unknown: 'bg-[#F0F1EF] text-[#6F746F] border-[#DADDD8]',
   default: 'bg-[#F0F1EF] text-[#6F746F] border-[#DADDD8]',
 }
@@ -45,6 +46,7 @@ export function HealthBadge({ healthStatus, children }) {
     connecting: 'Checking',
     timeout: 'Timeout',
     authentication_failed: 'Authentication Failed',
+    credential_error: 'Credential Error',
     unreachable: 'Unreachable',
     error: 'Connection Lost',
     unknown: 'Unknown',

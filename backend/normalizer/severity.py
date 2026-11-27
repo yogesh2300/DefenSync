@@ -34,6 +34,7 @@ SEVERITY_RANK: Mapping[SeverityLevel, _SeverityRank] = {
 DEFAULT_SEVERITY: Mapping[EventType, SeverityLevel] = {
     EventType.FAILED_LOGIN: SeverityLevel.HIGH,
     EventType.SUCCESSFUL_LOGIN: SeverityLevel.LOW,
+    EventType.INVALID_USER: SeverityLevel.HIGH,
     EventType.USER_CREATION: SeverityLevel.HIGH,
     EventType.USER_DELETION: SeverityLevel.CRITICAL,
     EventType.SUDO_COMMAND: SeverityLevel.MEDIUM,
@@ -41,11 +42,18 @@ DEFAULT_SEVERITY: Mapping[EventType, SeverityLevel] = {
     EventType.DIRECTORY_CREATION: SeverityLevel.LOW,
     EventType.PERMISSION_CHANGE: SeverityLevel.HIGH,
     EventType.COMMAND_EXECUTION: SeverityLevel.LOW,
+    EventType.PRIVILEGE_ESCALATION: SeverityLevel.MEDIUM,
+    EventType.FAILED_PRIVILEGE_ESCALATION: SeverityLevel.HIGH,
+    EventType.SESSION_OPENED: SeverityLevel.LOW,
+    EventType.SESSION_CLOSED: SeverityLevel.LOW,
+    EventType.SYSTEM_SNAPSHOT: SeverityLevel.LOW,
+    EventType.SYSTEM_EVENT: SeverityLevel.LOW,
 }
 
 BASE_RISK_SCORE: Mapping[EventType, int] = {
     EventType.FAILED_LOGIN: 65,
     EventType.SUCCESSFUL_LOGIN: 20,
+    EventType.INVALID_USER: 70,
     EventType.USER_CREATION: 70,
     EventType.USER_DELETION: 85,
     EventType.SUDO_COMMAND: 55,
@@ -53,6 +61,12 @@ BASE_RISK_SCORE: Mapping[EventType, int] = {
     EventType.DIRECTORY_CREATION: 30,
     EventType.PERMISSION_CHANGE: 60,
     EventType.COMMAND_EXECUTION: 40,
+    EventType.PRIVILEGE_ESCALATION: 50,
+    EventType.FAILED_PRIVILEGE_ESCALATION: 60,
+    EventType.SESSION_OPENED: 10,
+    EventType.SESSION_CLOSED: 5,
+    EventType.SYSTEM_SNAPSHOT: 0,
+    EventType.SYSTEM_EVENT: 10,
 }
 
 
@@ -96,6 +110,7 @@ class RiskScoreCalculator:
         if is_remote and event_type in {
             EventType.FAILED_LOGIN,
             EventType.SUCCESSFUL_LOGIN,
+            EventType.INVALID_USER,
             EventType.SUDO_COMMAND,
             EventType.COMMAND_EXECUTION,
         }:

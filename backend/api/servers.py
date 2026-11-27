@@ -9,8 +9,9 @@ from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field, computed_field, model_validator
 from sqlalchemy.orm import Session
 
-from backend.api.dependencies import get_current_admin, get_current_user, get_db
+from backend.api.dependencies import get_current_admin, get_current_user, get_db, visibility_for
 from backend.core.exceptions import AuthorizationError
+from backend.database.scope import resolve_account_id, user_can_access_server
 from backend.collector.log_sources import LOG_SOURCE_CATALOG
 from backend.core.logging import get_logger
 from backend.database.models import Server, User
@@ -106,6 +107,7 @@ class ServerResponse(BaseModel):
     risk_score: int = 0
     high_risk_count: int = 0
     owner_id: str | None = None
+    account_id: str | None = None
     created_by: str | None
     created_at: datetime
     updated_at: datetime
@@ -154,7 +156,7 @@ def is_admin(user: User) -> bool:
 
 def require_server_access(service: ServerService, server_id: str, user: User) -> Any:
     server = service.get_server(server_id)
-    if not is_admin(user) and (server.owner_id or server.created_by) != user.id:
+    if not user_can_access_server(user, server):
         raise AuthorizationError("You do not have access to this server.")
     return server
 
@@ -166,7 +168,8 @@ def list_servers(
     service: ServerService = Depends(get_server_service),
 ) -> Any:
     owner_id = None if is_admin(current_user) else current_user.id
-    return service.list_server_rows(active_only=active_only, owner_id=owner_id)
+    account_id = resolve_account_id(current_user)
+    return service.list_server_rows(active_only=active_only, owner_id=None if account_id else owner_id, account_id=account_id)
 
 
 @router.post("/refresh-status", summary="Refresh SSH connectivity status for servers")
@@ -264,6 +267,16 @@ def test_server(
     return service.test_connection(server_id)
 
 
+@router.post("/{server_id}/diagnose", summary="Stepwise SSH diagnostic (TCP, auth, exec, log sources)")
+def diagnose_server(
+    server_id: str,
+    current_user: User = Depends(get_current_user),
+    service: ServerService = Depends(get_server_service),
+) -> Any:
+    require_server_access(service, server_id, current_user)
+    return service.diagnose_server(server_id)
+
+
 @router.post("/{server_id}/connect", summary="Connect and update server status")
 def connect_server(
     server_id: str,
@@ -283,7 +296,7 @@ def collect_server(
 ) -> Any:
     require_server_access(service, server_id, current_user)
     sources = frozenset(body.log_sources) if body.log_sources else None
-    return service.collect_for_server(server_id, tail_lines=body.tail_lines, log_sources=sources)
+    return service.collect_for_server(server_id, tail_lines=body.tail_lines, log_sources=sources, requested_by=current_user)
 
 
 @router.get("/{server_id}/logs", summary="Logs for a server")
@@ -294,8 +307,8 @@ def server_logs(
     events: EventService = Depends(get_event_service),
 ) -> Any:
     require_server_access(ServerService(events._session), server_id, current_user)
-    owner_id = None if is_admin(current_user) else current_user.id
-    return events.query_events(limit=limit, server_id=server_id, owner_id=owner_id)
+    visibility = visibility_for(current_user, scope="private")
+    return events.query_events(limit=limit, server_id=server_id, visibility=visibility)
 
 
 @router.get("/{server_id}/predictions", summary="ML predictions for a server")
@@ -307,7 +320,8 @@ def server_predictions(
 ) -> Any:
     require_server_access(ServerService(detection._session), server_id, current_user)
     owner_id = None if is_admin(current_user) else current_user.id
-    return detection.get_anomalies(limit=limit, server_id=server_id, owner_id=owner_id)
+    payload = detection.get_anomalies(limit=limit, server_id=server_id, owner_id=owner_id, account_id=resolve_account_id(current_user))
+    return payload.get("items", payload) if isinstance(payload, dict) else payload
 
 
 @router.get("/{server_id}/risk", summary="Risk summary for a server")

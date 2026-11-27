@@ -1,0 +1,63 @@
+environment,pipeline,operation,event_type,score_kind,base_or_value,modifiers_or_delta,final_formula,severity,conditions,source_file,source_symbol,notes
+Linux,live_RiskEngine,Failed Login,Failed Login,base,65,"+10 if is_root; +5 if is_privileged_user; +5 if is_remote","clamp(base+modifiers+rule_deltas,0,100)",high (default),always base map,backend/normalizer/severity.py,BASE_RISK_SCORE,Live path uses RiskEngine after normalize
+Linux,live_RiskEngine,Failed Login,Failed Login,rule_delta,0,FailedLoginRule +0,additive with other rules,unchanged,event_type==Failed Login,backend/risk/rules.py,FailedLoginRule,Factor/recommendation only
+Linux,live_RiskEngine,Failed Login,Failed Login,rule_delta,15,MultipleFailedLoginRule +15,additive,HIGH,failed_login_count>=3,backend/risk/rules.py,MultipleFailedLoginRule,Batch context from pipeline
+Linux,live_RiskEngine,Successful Login,Successful Login,base,20,"+10 is_root; +5 is_privileged_user; +5 is_remote",clamp(...),low (default),base map,backend/normalizer/severity.py,BASE_RISK_SCORE,
+Linux,live_RiskEngine,Successful Login,Successful Login,rule_delta,20,RootLoginRule +20,additive,HIGH,username root/0 or context.is_root,backend/risk/rules.py,RootLoginRule,
+Linux,live_RiskEngine,Successful Login,Successful Login,rule_delta,0,SshSuccessRule +0,additive,unchanged,source_ip or is_remote,backend/risk/rules.py,SshSuccessRule,Factor only
+Linux,live_RiskEngine,Invalid User,Invalid User,base,70,"+10 is_root; +5 is_privileged_user; +5 is_remote",clamp(...),high,base map,backend/normalizer/severity.py,BASE_RISK_SCORE,No dedicated rule
+Linux,live_RiskEngine,User Creation,User Creation,base,70,context modifiers,clamp(...),high,base map,backend/normalizer/severity.py,BASE_RISK_SCORE,
+Linux,live_RiskEngine,User Creation,User Creation,rule_delta,5,NewUserCreationRule +5,additive,HIGH,always on User Creation,backend/risk/rules.py,NewUserCreationRule,
+Linux,live_RiskEngine,User Deletion,User Deletion,base,85,context modifiers,clamp(...),critical,base map,backend/normalizer/severity.py,BASE_RISK_SCORE,No dedicated rule
+Linux,live_RiskEngine,Sudo Command,Sudo Command,base,55,"+10 is_root; +5 is_privileged_user; +5 is_remote",clamp(...),medium (default),base map,backend/normalizer/severity.py,BASE_RISK_SCORE,
+Linux,live_RiskEngine,Sudo Command,Sudo Command,rule_delta,10,SuspiciousSudoRule +10,additive,HIGH,sensitive cmd token in cmd/proctitle,backend/risk/rules.py,SuspiciousSudoRule,"tokens: chmod chown useradd userdel passwd visudo iptables firewall-cmd rm mkfs dd curl wget"
+Linux,live_RiskEngine,Sudo Command,Sudo Command,rule_delta,5,SuspiciousSudoRule +5,additive,MEDIUM,not sensitive but root user,backend/risk/rules.py,SuspiciousSudoRule,Mutually exclusive with +10 branch
+Linux,live_RiskEngine,File Modification,File Modification,base,45,"+10 is_root; +5 is_privileged_user (no remote bonus)",clamp(...),medium,base map,backend/normalizer/severity.py,BASE_RISK_SCORE,No dedicated rule
+Linux,live_RiskEngine,Directory Creation,Directory Creation,base,30,root context only,clamp(...),low,base map,backend/normalizer/severity.py,BASE_RISK_SCORE,No dedicated rule
+Linux,live_RiskEngine,Permission Change,Permission Change,base,60,root context only,clamp(...),high,base map,backend/normalizer/severity.py,BASE_RISK_SCORE,No dedicated rule
+Linux,live_RiskEngine,Command Execution,Command Execution,base,40,"+10 is_root; +5 is_privileged_user; +5 is_remote",clamp(...),low,base map,backend/normalizer/severity.py,BASE_RISK_SCORE,No dedicated rule
+Linux,live_RiskEngine,Privilege Escalation,Privilege Escalation,base,50,root context only,clamp(...),medium,base map,backend/normalizer/severity.py,BASE_RISK_SCORE,No dedicated rule
+Linux,live_RiskEngine,Failed Privilege Escalation,Failed Privilege Escalation,base,60,root context only,clamp(...),high,base map,backend/normalizer/severity.py,BASE_RISK_SCORE,No dedicated rule
+Linux,live_RiskEngine,Session Opened,Session Opened,base,10,root context only,clamp(...),low,base map,backend/normalizer/severity.py,BASE_RISK_SCORE,No dedicated rule
+Linux,live_RiskEngine,Session Closed,Session Closed,base,5,root context only,clamp(...),low,base map,backend/normalizer/severity.py,BASE_RISK_SCORE,No dedicated rule
+Linux,live_RiskEngine,System Snapshot,System Snapshot,base,0,none,0,low,base map; EXCLUDED from dashboard AVG,backend/normalizer/severity.py; backend/normalizer/event_types.py,BASE_RISK_SCORE; NON_SECURITY_EVENT_TYPES,
+Linux,live_RiskEngine,System Event,System Event,base,10,none,10,low,EXCLUDED from dashboard AVG,backend/normalizer/severity.py; event_types.py,BASE_RISK_SCORE; NON_SECURITY_EVENT_TYPES,
+Linux,live_RiskEngine,Unmapped type,(any other EventType),fallback,50,context modifiers if flags set,clamp(...),medium,event_type missing from BASE_RISK_SCORE,backend/normalizer/severity.py,RiskScoreCalculator.calculate,
+Linux,normalize_only,any,any,placeholder,0,none until RiskEngine,0 until enrich,info,score_risk=False,backend/normalizer/event_normalizer.py,_UNSCORED_RISK_SCORE,Live pipeline uses this then enriches
+Linux,context,any applicable,any,modifier,10,is_root +10,part of calculator,n/a,metadata.is_root or username root/0,backend/normalizer/severity.py; backend/risk/engine.py,calculate; build_context,Engine sets is_privileged_user=is_root
+Linux,context,any applicable,any,modifier,5,is_privileged_user +5,part of calculator,n/a,equals is_root in live engine,backend/risk/engine.py,build_context,
+Linux,context,"Failed Login; Successful Login; Invalid User; Sudo Command; Command Execution",those types,modifier,5,is_remote +5,part of calculator,n/a,metadata.is_remote or source_ip present,backend/normalizer/severity.py,calculate,
+Azure,live_LA,Entra sign-in success,CLOUD_LOGIN_SUCCESS,fixed,20,none,20,info,outcome==0,backend/services/cloud/azure_normalizer.py,normalize_record,Operation type does not change score
+Azure,live_LA,Entra sign-in failure,CLOUD_LOGIN_FAILURE,fixed,70,none,70,medium,outcome present and !=0,backend/services/cloud/azure_normalizer.py,normalize_record,
+Azure,live_LA,Entra sign-in unknown,CLOUD_AUTHENTICATION,fixed,20,none,20,info,outcome missing -> failed=False,backend/services/cloud/azure_normalizer.py,_signin,
+Azure,live_LA,Privilege op success,CLOUD_PRIVILEGE_CHANGE,fixed,20,none,20,info,failed=False; taxonomy only,azure_normalizer.py; azure_import_service.py,normalize_record; classify_azure_event,
+Azure,live_LA,Privilege op failed,CLOUD_PRIVILEGE_CHANGE,fixed,70,none,70,medium,ActivityStatus failed/failure,azure_normalizer.py,_activity; normalize_record,
+Azure,live_LA,ARM write/delete/action success,CLOUD_RESOURCE_OPERATION,fixed,20,none,20,info,failed=False,azure_normalizer.py,normalize_record,
+Azure,live_LA,ARM write/delete/action failed,CLOUD_RESOURCE_OPERATION,fixed,70,none,70,medium,failed=True,azure_normalizer.py,normalize_record,
+Azure,live_LA,Other activity success,CLOUD_ACTIVITY,fixed,20,none,20,info,failed=False,azure_normalizer.py,normalize_record,
+Azure,live_LA,Other activity failed,CLOUD_ACTIVITY,fixed,70,none,70,medium,failed=True,azure_normalizer.py,normalize_record,
+Azure,file_import,any classified Azure row,(same taxonomy),fixed,70 or 20,none,"70 if failed else 20",medium or info,status failed/failure OR sign_in_failed,backend/services/datasets/azure_import_service.py,_normalize,Consistent with live binary rule
+Azure,presentation,Sign-in activity,CLOUD_LOGIN_SUCCESS,fixed,20,none,20,info,demo step; PRESENTATION_SIMULATED,backend/services/cloud/presentation_telemetry.py,SETUP_STEPS,Not live LA scoring
+Azure,presentation,Add application,(classified),fixed,30,none,30,low,demo step,backend/services/cloud/presentation_telemetry.py,SETUP_STEPS,
+Azure,presentation,Add service principal,(classified),fixed,30,none,30,low,demo step,backend/services/cloud/presentation_telemetry.py,SETUP_STEPS,
+Azure,presentation,Certificates and secrets,(classified),fixed,45,none,45,medium,demo step,backend/services/cloud/presentation_telemetry.py,SETUP_STEPS,
+Azure,presentation,Reader roleAssignments/write,CLOUD_PRIVILEGE_CHANGE,fixed,55,none,55,medium,demo step,backend/services/cloud/presentation_telemetry.py,SETUP_STEPS,
+Azure,presentation,workspaces/write,CLOUD_RESOURCE_OPERATION,fixed,25,none,25,low,demo step,backend/services/cloud/presentation_telemetry.py,SETUP_STEPS,
+Azure,presentation,diagnosticSettings/write,CLOUD_RESOURCE_OPERATION,fixed,35,none,35,low,demo step,backend/services/cloud/presentation_telemetry.py,SETUP_STEPS,
+Azure,presentation,elevateAccess/action,CLOUD_PRIVILEGE_CHANGE,fixed,60,none,60,medium,demo step,backend/services/cloud/presentation_telemetry.py,SETUP_STEPS,
+Azure,presentation,Failed Owner roleAssignments/write,CLOUD_PRIVILEGE_CHANGE,live_failed_via_normalizer,70,none,70,medium,demo trigger via azure_normalizer,backend/services/cloud/presentation_telemetry.py,_trigger_payload,
+Linux,presentation,Simulated privileged sudo,Sudo Command,fixed,80,none,80,high,presentation trigger,backend/services/linux_presentation_trigger.py,RISK_SCORE,
+Dashboard,aggregation,security events average,n/a,aggregate,AVG(risk_score),exclude System Snapshot and System Event,int(round(avg)),n/a,visibility/environment/account scope,backend/database/crud.py,dashboard_summary,Primary UI score
+Dashboard,aggregation,high_risk count,n/a,threshold,70,count risk_score>=70 among security events,count,n/a,HIGH_RISK_THRESHOLD,backend/services/alert_service.py; crud.py,HIGH_RISK_THRESHOLD; dashboard_summary,
+Account,composite,account_risk,n/a,composite,n/a,"avg*0.4 + min(40 high_risk/50) + min(30 anomalies/40)",clamp 0-100,n/a,uses Detection anomaly counts,backend/services/account_service.py,_compute_account_risk,NOT the primary dashboard score
+Server,aggregation,server average,n/a,aggregate,AVG(all server events),NO snapshot exclusion,int(round(avg)),n/a,server_id filter,backend/database/server_crud.py,average_risk_for_server,Inconsistent with dashboard exclusion
+Admin,aggregation,user detail average,n/a,aggregate,AVG(owner events),NO snapshot exclusion,int(round(avg)),n/a,owner_id,backend/services/admin_service.py,user_detail,Inconsistent with dashboard exclusion
+Incident,correlation,incident risk,n/a,composite,n/a,min(100 round(confidence*0.45 + max_risk*0.55)),0-100,critical if max_risk>=85 else high if >=70 else medium,cluster evidence,backend/services/correlation_service.py,_incident_from_cluster,Does not feed average_risk_score
+Incident,correlation,confidence,n/a,composite,n/a,min(100 round((len(evidence)/5)*80 + min(len(high_risk) 4)*5)),0-100,n/a,evidence and high_risk events,backend/services/correlation_service.py,_incident_from_cluster,
+ML,isolation_forest,anomaly_score,n/a,ml, -score_samples(x),higher more anomalous,float,n/a,does not rewrite event.risk_score,backend/ml/linux_isolation_forest.py,anomaly_scores,
+ML,alert,ML anomaly alert risk,n/a,alert_only,event.risk_score (preserve; IF in confidence),none,alert.risk_score + anomaly_score + alert_priority,from event severity/risk (not forced high),create_ml_alert,backend/services/alert_service.py,create_ml_alert,Event row unchanged; legacy 75 corrected in serialize_alert
+Behavioral,over_efficiency,weighted signals,BEHAVIORAL rows,detector,0 start,"+20 typing +25 command_rate +10 extreme_rate +5 low_error +15 low_idle +15 repetition +5 unusual_login +5 session +25 unusual_pattern; or +50 combined",clamp 0-100,behavioral bands,OverEfficiencyDetector,backend/services/behavioral/over_efficiency_detector.py,evaluate,Overwrites event.risk_score for analyzed behavioral events
+Dataset,streaming_import,failure-like types,(FAILURE/EXCEPTION/AUTHORIZATION/LOGIN_FAILURE in type),fixed,70,none,70,from severity map otherwise,"critical=85 high=70 medium=45 low=20 info=5 default=5",backend/services/datasets/streaming_import.py,risk_score_for,BGL/HDFS path; not Azure LA
+Dataset,openstack,CLOUD_*_FAILURE types,CLOUD_AUTHORIZATION_FAILURE etc,fixed,70,else severity map,70 or map,severity-based,openstack import,backend/services/datasets/openstack_import_service.py,_risk_score_for,Not Azure LA
+Frontend,primary_badge,displayed average,n/a,ui_band,n/a,>=80 critical >=60 high >=40 medium else low,badge only,n/a,primaryScoreSeverity,frontend/src/intelligence/primaryScore.js,primaryScoreSeverity,Differs from backend risk_level_from_score
+Backend,risk_level,event risk_level,n/a,level_map,n/a,>=85 critical >=70 high >=40 medium else low,string,n/a,risk_level_from_score,backend/risk/levels.py,risk_level_from_score,

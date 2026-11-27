@@ -25,73 +25,56 @@ class AnalyticsService:
         *,
         owner_id: str | None = None,
         server_id: str | None = None,
+        visibility=None,
     ) -> dict[str, Any]:
         """Aggregate security event statistics for SIEM dashboards."""
         logger.info("Calculating security event statistics server_id=%s", server_id)
-        scoped_owner_id = owner_id
 
-        # 1. Total events
-        total_stmt = select(func.count(SecurityEvent.id))
-        if scoped_owner_id:
-            total_stmt = total_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
-        if server_id:
-            total_stmt = total_stmt.where(SecurityEvent.server_id == server_id)
+        def scoped(stmt):
+            if visibility is not None:
+                stmt = stmt.where(visibility)
+            elif owner_id:
+                stmt = stmt.where(SecurityEvent.owner_id == owner_id)
+            if server_id:
+                stmt = stmt.where(SecurityEvent.server_id == server_id)
+            return stmt
+
+        total_stmt = scoped(select(func.count(SecurityEvent.id)))
         total_events = self._session.scalar(total_stmt) or 0
 
-        # 2. Count by severity
-        severity_stmt = select(SecurityEvent.severity, func.count(SecurityEvent.id)).group_by(SecurityEvent.severity)
-        if scoped_owner_id:
-            severity_stmt = severity_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
-        if server_id:
-            severity_stmt = severity_stmt.where(SecurityEvent.server_id == server_id)
+        severity_stmt = scoped(select(SecurityEvent.severity, func.count(SecurityEvent.id)).group_by(SecurityEvent.severity))
         severity_rows = self._session.execute(severity_stmt).all()
         severity_counts = {row[0]: row[1] for row in severity_rows}
 
-        # 3. Count by event_type
-        type_stmt = select(SecurityEvent.event_type, func.count(SecurityEvent.id)).group_by(SecurityEvent.event_type)
-        if scoped_owner_id:
-            type_stmt = type_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
-        if server_id:
-            type_stmt = type_stmt.where(SecurityEvent.server_id == server_id)
+        type_stmt = scoped(select(SecurityEvent.event_type, func.count(SecurityEvent.id)).group_by(SecurityEvent.event_type))
         type_rows = self._session.execute(type_stmt).all()
         type_counts = {row[0]: row[1] for row in type_rows}
 
-        # 4. Top source IP attackers
-        top_ips_stmt = (
+        top_ips_stmt = scoped(
             select(SecurityEvent.source_ip, func.count(SecurityEvent.id))
             .where(SecurityEvent.source_ip.is_not(None), SecurityEvent.source_ip != "")
             .group_by(SecurityEvent.source_ip)
             .order_by(desc(func.count(SecurityEvent.id)))
             .limit(5)
         )
-        if scoped_owner_id:
-            top_ips_stmt = top_ips_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
-        if server_id:
-            top_ips_stmt = top_ips_stmt.where(SecurityEvent.server_id == server_id)
         top_ips_rows = self._session.execute(top_ips_stmt).all()
         top_source_ips = {row[0]: row[1] for row in top_ips_rows}
 
-        # 5. Top usernames targeted
-        top_users_stmt = (
+        top_users_stmt = scoped(
             select(SecurityEvent.username, func.count(SecurityEvent.id))
             .where(SecurityEvent.username.is_not(None), SecurityEvent.username != "")
             .group_by(SecurityEvent.username)
             .order_by(desc(func.count(SecurityEvent.id)))
             .limit(5)
         )
-        if scoped_owner_id:
-            top_users_stmt = top_users_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
-        if server_id:
-            top_users_stmt = top_users_stmt.where(SecurityEvent.server_id == server_id)
         top_users_rows = self._session.execute(top_users_stmt).all()
         top_usernames = {row[0]: row[1] for row in top_users_rows}
 
-        # 6. Events per hour (last 24 hours) with safe Python fallback
         cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
         hourly_counts = []
-        
+
         try:
-            hourly_stmt = (
+            hourly_stmt = scoped(
                 select(
                     func.date_trunc("hour", SecurityEvent.timestamp).label("hour"),
                     func.count(SecurityEvent.id).label("count")
@@ -100,10 +83,6 @@ class AnalyticsService:
                 .group_by(text("hour"))
                 .order_by(text("hour"))
             )
-            if scoped_owner_id:
-                hourly_stmt = hourly_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
-            if server_id:
-                hourly_stmt = hourly_stmt.where(SecurityEvent.server_id == server_id)
             hourly_rows = self._session.execute(hourly_stmt).all()
             for row in hourly_rows:
                 hour_dt = row[0]
@@ -115,20 +94,12 @@ class AnalyticsService:
         except Exception as e:
             logger.warning("Failed SQL hourly aggregation, falling back to Python grouping: %s", str(e))
             self._session.rollback()
-            
-            # Python-based fallback
-            all_events_stmt = select(SecurityEvent.timestamp).where(SecurityEvent.timestamp >= cutoff)
-            if scoped_owner_id:
-                all_events_stmt = all_events_stmt.where(SecurityEvent.owner_id == scoped_owner_id)
-            if server_id:
-                all_events_stmt = all_events_stmt.where(SecurityEvent.server_id == server_id)
+            all_events_stmt = scoped(select(SecurityEvent.timestamp).where(SecurityEvent.timestamp >= cutoff))
             events_ts = self._session.scalars(all_events_stmt).all()
-            
             buckets: dict[str, int] = {}
             for i in range(24):
                 slot = cutoff + timedelta(hours=i)
                 buckets[slot.strftime("%Y-%m-%d %H:00")] = 0
-                
             for ts in events_ts:
                 if ts:
                     ts_utc = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
@@ -137,7 +108,6 @@ class AnalyticsService:
                         buckets[bucket_key] += 1
                     else:
                         buckets[bucket_key] = 1
-            
             hourly_counts = [{"hour": k, "count": v} for k, v in sorted(buckets.items())]
 
         return {

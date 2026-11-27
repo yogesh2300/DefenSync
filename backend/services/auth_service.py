@@ -4,6 +4,8 @@ Authentication business logic service for DefenSync.
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy.orm import Session
 
 from backend.core.exceptions import (
@@ -26,6 +28,10 @@ from backend.database.models import User
 
 logger = get_logger(__name__)
 
+MFA_AMR = ("pwd", "otp")
+MIN_PASSWORD_LENGTH = 8
+EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
 
 class AuthService:
     """
@@ -35,16 +41,12 @@ class AuthService:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def register_user(
-        self,
-        username: str,
-        email: str,
-        password: str,
-        role: str = "ANALYST",
-    ) -> User:
+    @staticmethod
+    def validate_registration(username: str, email: str, password: str) -> tuple[str, str]:
+        """Return the normalized (username, email) or raise ValidationException."""
 
-        username = username.strip()
-        email = email.strip().lower()
+        username = (username or "").strip()
+        email = (email or "").strip().lower()
 
         if not username:
             raise ValidationException("Username cannot be empty.")
@@ -52,12 +54,38 @@ class AuthService:
         if not email:
             raise ValidationException("Email cannot be empty.")
 
+        if not EMAIL_PATTERN.fullmatch(email):
+            raise ValidationException("Enter a valid email address.")
+
+        AuthService.validate_password(password)
+        return username, email
+
+    @staticmethod
+    def validate_password(password: str) -> None:
+        """The password policy shared by registration and password reset."""
+
         if not password:
             raise ValidationException("Password cannot be empty.")
 
-        role = role.strip().upper()
-        if role not in {"ADMIN", "ANALYST"}:
-            raise ValidationException("Invalid user role.")
+        if len(password) < MIN_PASSWORD_LENGTH:
+            raise ValidationException(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+
+    def set_password(self, user: User, password: str) -> None:
+        """Store a new password hash for an existing user (password reset). Never logs or stores the plaintext."""
+
+        self.validate_password(password)
+        digest = hash_password(password)
+        try:
+            user.password_hash = digest
+            user.hashed_password = digest
+            self.db.commit()
+        except Exception as exc:
+            self.db.rollback()
+            logger.exception("Failed to update password for user %s", user.id)
+            raise DatabaseException("Failed to update password.") from exc
+
+    def ensure_available(self, username: str, email: str) -> None:
+        """Only existing (verified) users block a username or email; pending registrations never do."""
 
         if get_user_by_username(self.db, username=username):
             raise ValidationException("Username already exists.")
@@ -65,7 +93,30 @@ class AuthService:
         if get_user_by_email(self.db, email=email):
             raise ValidationException("Email already exists.")
 
-        password_hash = hash_password(password)
+    def register_user(
+        self,
+        username: str,
+        email: str,
+        password: str,
+        role: str = "ANALYST",
+    ) -> User:
+        """Create a user directly (bootstrap/admin tooling). Self-service sign-up goes through RegistrationService."""
+
+        username, email = self.validate_registration(username, email, password)
+        return self.create_user_with_hash(username, email, hash_password(password), role=role)
+
+    def create_user_with_hash(
+        self,
+        username: str,
+        email: str,
+        password_hash: str,
+        role: str = "ANALYST",
+    ) -> User:
+        role = (role or "").strip().upper()
+        if role not in {"ADMIN", "ANALYST"}:
+            raise ValidationException("Invalid user role.")
+
+        self.ensure_available(username, email)
 
         try:
             user = create_user(
@@ -84,26 +135,22 @@ class AuthService:
 
     def authenticate_user(
         self,
-        username: str,
+        email: str,
         password: str,
     ) -> User:
+        """Password check by registered email. Username is a display identity, not a login."""
 
-        user = get_user_by_username(
+        user = get_user_by_email(
             self.db,
-            username=username,
+            email=(email or "").strip().lower(),
         )
 
-        if user is None:
-            raise AuthenticationError(
-                "Invalid username or password."
-            )
-
-        if not verify_password(
+        if user is None or not verify_password(
             password,
             user.password_hash or user.hashed_password,
         ):
             raise AuthenticationError(
-                "Invalid username or password."
+                "Invalid email or password."
             )
 
         return user
@@ -111,11 +158,22 @@ class AuthService:
     def create_token(
         self,
         user: User,
+        *,
+        device_id: str | None = None,
     ) -> str:
+        """Issue the application token. Call only after the second factor has been verified.
 
-        return create_access_token(
-            {
-                "sub": user.username,
-                "role": user.role,
-            }
-        )
+        Optional ``device_id`` binds the access token to a VERIFIED trusted device so that
+        revoking that device invalidates this token on the next authenticated request.
+        Tokens without ``device_id`` remain ordinary MFA sessions (not selectively
+        device-revocable). There are no refresh tokens in this architecture.
+        """
+
+        payload: dict = {
+            "sub": user.username,
+            "role": user.role,
+            "amr": list(MFA_AMR),
+        }
+        if device_id:
+            payload["device_id"] = device_id
+        return create_access_token(payload)

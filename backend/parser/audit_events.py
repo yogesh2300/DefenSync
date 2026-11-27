@@ -48,6 +48,25 @@ def _base_audit_event(
     )
 
 
+def parse_user_auth(raw_line: str, fields: dict[str, str], audit_type: str) -> dict[str, Any] | None:
+    """Detect authentication and session start/end from audit records."""
+    if audit_type not in {"USER_AUTH", "USER_LOGIN", "USER_START", "USER_END", "USER_ACCT"}:
+        return None
+    op = (fields.get("op") or "").lower()
+    if audit_type == "USER_ACCT" and ("add" in op or "delet" in op):
+        return None
+    res = (fields.get("res") or fields.get("success") or "").lower()
+    failed = res in {"failed", "no", "0"} or "fail" in op
+    event_type = EventType.FAILED_LOGIN if failed else EventType.SUCCESSFUL_LOGIN
+    return _base_audit_event(
+        raw_line,
+        fields,
+        audit_type,
+        event_type=event_type,
+        username=fields.get("acct") or extract_audit_username(fields),
+    )
+
+
 def parse_user_creation(raw_line: str, fields: dict[str, str], audit_type: str) -> dict[str, Any] | None:
     """Detect user account creation events."""
     if audit_type == "ADD_USER":
@@ -226,6 +245,7 @@ def parse_command_execution(raw_line: str, fields: dict[str, str], audit_type: s
 
 
 AUDIT_EVENT_PARSERS: tuple[AuditParser, ...] = (
+    parse_user_auth,
     parse_user_creation,
     parse_user_deletion,
     parse_sudo_command,

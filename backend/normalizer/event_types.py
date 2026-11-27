@@ -15,6 +15,7 @@ class EventCategory(StrEnum):
     PRIVILEGE = "privilege"
     FILE_SYSTEM = "file_system"
     PROCESS = "process"
+    SYSTEM = "system"
 
 
 class EventType(StrEnum):
@@ -22,6 +23,7 @@ class EventType(StrEnum):
 
     FAILED_LOGIN = "Failed Login"
     SUCCESSFUL_LOGIN = "Successful Login"
+    INVALID_USER = "Invalid User"
     USER_CREATION = "User Creation"
     USER_DELETION = "User Deletion"
     SUDO_COMMAND = "Sudo Command"
@@ -29,11 +31,34 @@ class EventType(StrEnum):
     DIRECTORY_CREATION = "Directory Creation"
     PERMISSION_CHANGE = "Permission Change"
     COMMAND_EXECUTION = "Command Execution"
+    PRIVILEGE_ESCALATION = "Privilege Escalation"
+    FAILED_PRIVILEGE_ESCALATION = "Failed Privilege Escalation"
+    SESSION_OPENED = "Session Opened"
+    SESSION_CLOSED = "Session Closed"
+    SYSTEM_SNAPSHOT = "System Snapshot"
+    SYSTEM_EVENT = "System Event"
+
+
+NON_SECURITY_EVENT_TYPES = frozenset({EventType.SYSTEM_SNAPSHOT.value, EventType.SYSTEM_EVENT.value})
+
+# Stored in normalized_data["record_kind"]. Only SECURITY_EVENT rows carry a source
+# occurrence time that is meaningful for behavioral sequences.
+RECORD_SECURITY_EVENT = "SECURITY_EVENT"
+RECORD_SYSTEM_EVENT = "SYSTEM_EVENT"
+RECORD_SYSTEM_SNAPSHOT = "SYSTEM_SNAPSHOT"
+
+# Stored in normalized_data["record_origin"]. COLLECTOR_GENERATED marks activity caused by
+# DefenSync itself (health probes, collection sessions); it is kept, never deleted.
+RECORD_ORIGIN_SOURCE_OBSERVED = "SOURCE_OBSERVED"
+RECORD_ORIGIN_COLLECTOR = "COLLECTOR_GENERATED"
+# normalized_data is JSON text written with json.dumps defaults; this is how the marker appears.
+COLLECTOR_ORIGIN_MARKER = f'"record_origin": "{RECORD_ORIGIN_COLLECTOR}"'
 
 
 EVENT_CATEGORY_MAP: dict[EventType, EventCategory] = {
     EventType.FAILED_LOGIN: EventCategory.AUTHENTICATION,
     EventType.SUCCESSFUL_LOGIN: EventCategory.AUTHENTICATION,
+    EventType.INVALID_USER: EventCategory.AUTHENTICATION,
     EventType.USER_CREATION: EventCategory.IDENTITY,
     EventType.USER_DELETION: EventCategory.IDENTITY,
     EventType.SUDO_COMMAND: EventCategory.PRIVILEGE,
@@ -41,6 +66,12 @@ EVENT_CATEGORY_MAP: dict[EventType, EventCategory] = {
     EventType.DIRECTORY_CREATION: EventCategory.FILE_SYSTEM,
     EventType.PERMISSION_CHANGE: EventCategory.FILE_SYSTEM,
     EventType.COMMAND_EXECUTION: EventCategory.PROCESS,
+    EventType.PRIVILEGE_ESCALATION: EventCategory.PRIVILEGE,
+    EventType.FAILED_PRIVILEGE_ESCALATION: EventCategory.PRIVILEGE,
+    EventType.SESSION_OPENED: EventCategory.AUTHENTICATION,
+    EventType.SESSION_CLOSED: EventCategory.AUTHENTICATION,
+    EventType.SYSTEM_SNAPSHOT: EventCategory.SYSTEM,
+    EventType.SYSTEM_EVENT: EventCategory.SYSTEM,
 }
 
 

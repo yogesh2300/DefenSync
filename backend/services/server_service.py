@@ -10,28 +10,42 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from backend.core.encryption import encrypt_secret
-from backend.core.exceptions import ResourceNotFoundError, ValidationException
+from backend.core.exceptions import CollectionProcessingError, ResourceNotFoundError, ValidationException
 from backend.core.logging import get_logger
 from backend.database import server_crud
-from backend.database.models import Server
+from backend.database.models import Server, User
 from backend.health.status import HealthStatus, health_label
 from backend.health.types import HealthCheckResult
 from backend.services.detection_service import DetectionService
 from backend.services.health_engine import get_health_engine
 from backend.services.health_service import HealthService
+from backend.services.collection_n8n_trigger import record_linux_success
+from backend.services.linux_presentation_trigger import record_linux_presentation_trigger
 from backend.services.pipeline_service import PipelineService
 from backend.services.ssh_service import SSHService
 
 logger = get_logger(__name__)
 
 
-def _run_post_collection_detection(owner_id: str | None, server_id: str) -> None:
-    """Run ML detection in a background thread so collect API responses return promptly."""
+def _run_post_collection_detection(
+    owner_id: str | None,
+    server_id: str,
+    account_id: str | None = None,
+) -> None:
+    """Run existing detection for one server after a successful collection.
+
+    Runs in a background thread so the collect API can return promptly. Failures are
+    logged only — they must never rewrite the completed collection result.
+    """
     from backend.database.connection import get_session
 
     session = get_session()
     try:
-        DetectionService(session).run_detection(owner_id=owner_id, server_id=server_id)
+        DetectionService(session).run_detection(
+            owner_id=owner_id,
+            server_id=server_id,
+            account_id=account_id,
+        )
         logger.info("Background detection finished server_id=%s", server_id)
     except Exception:
         logger.exception("Background post-collection detection failed server_id=%s", server_id)
@@ -46,8 +60,8 @@ class ServerService:
         self._session = session
         self._health = HealthService(session)
 
-    def list_servers(self, *, active_only: bool = False, owner_id: str | None = None) -> list[Server]:
-        return server_crud.list_servers(self._session, active_only=active_only, owner_id=owner_id)
+    def list_servers(self, *, active_only: bool = False, owner_id: str | None = None, account_id: str | None = None) -> list[Server]:
+        return server_crud.list_servers(self._session, active_only=active_only, owner_id=owner_id, account_id=account_id)
 
     def get_server(self, server_id: str) -> Server:
         server = server_crud.get_server(self._session, server_id)
@@ -72,6 +86,10 @@ class ServerService:
     ) -> Server:
         auth = self._normalize_auth_type(authentication_type)
         self._validate_ssh_fields(host, username, auth, password, private_key)
+        account_id = None
+        if created_by:
+            owner = self._session.get(User, created_by)
+            account_id = getattr(owner, "account_id", None) if owner else None
         server = server_crud.create_server(
             self._session,
             {
@@ -88,6 +106,7 @@ class ServerService:
                 "status": "active",
                 "health_status": HealthStatus.UNKNOWN,
                 "owner_id": created_by,
+                "account_id": account_id,
                 "created_by": created_by,
             },
         )
@@ -104,13 +123,24 @@ class ServerService:
 
         password = payload.pop("password", None)
         private_key = payload.pop("private_key", None)
+        if "username" in payload and payload["username"] is not None:
+            username = payload["username"].strip()
+            if not username:
+                raise ValidationException("Username cannot be empty.")
+            # The stored secret belongs to the current account; keeping it for another account cannot work.
+            if username != server.username and not (password or private_key):
+                raise ValidationException(
+                    "Changing the SSH username requires a new password or private key for that account."
+                )
+            payload["username"] = username
+        # Set directly: server_crud.update_server ignores None, and the previous secret must be cleared.
         if password:
-            payload["encrypted_password"] = encrypt_secret(password)
-            payload["encrypted_private_key"] = None
+            server.encrypted_password = encrypt_secret(password)
+            server.encrypted_private_key = None
             payload["authentication_type"] = "password"
         elif private_key:
-            payload["encrypted_private_key"] = encrypt_secret(private_key)
-            payload["encrypted_password"] = None
+            server.encrypted_private_key = encrypt_secret(private_key)
+            server.encrypted_password = None
             payload["authentication_type"] = "ssh_key"
 
         if "status" in payload and payload["status"] == "inactive":
@@ -130,8 +160,8 @@ class ServerService:
             get_health_engine().trigger_async(server_id=updated.id)
         return updated
 
-    def list_server_rows(self, *, active_only: bool = False, owner_id: str | None = None) -> list[dict[str, Any]]:
-        return [self._server_to_dict(server) for server in self.list_servers(active_only=active_only, owner_id=owner_id)]
+    def list_server_rows(self, *, active_only: bool = False, owner_id: str | None = None, account_id: str | None = None) -> list[dict[str, Any]]:
+        return [self._server_to_dict(server) for server in self.list_servers(active_only=active_only, owner_id=owner_id, account_id=account_id)]
 
     def server_row(self, server_id: str) -> dict[str, Any]:
         return self._server_to_dict(self.get_server(server_id))
@@ -158,7 +188,7 @@ class ServerService:
         elif result["success"]:
             health_status = HealthStatus.ONLINE
         else:
-            health_status = HealthStatus.OFFLINE
+            health_status = result.get("health_status") or HealthStatus.OFFLINE
 
         updates: dict[str, Any] = {}
         if result.get("operating_system"):
@@ -182,6 +212,14 @@ class ServerService:
         result["health_status"] = health_status
         result["connection_state"] = health_label(health_status)
         return result
+
+    def diagnose_server(self, server_id: str) -> dict[str, Any]:
+        """Stepwise SSH diagnostic with stored credentials; does not change health state."""
+        server = self.get_server(server_id)
+        report = SSHService.diagnose_server(server)
+        report["server_id"] = server.id
+        report["server_name"] = server.server_name
+        return report
 
     def test_credentials(
         self,
@@ -211,7 +249,9 @@ class ServerService:
         *,
         tail_lines: int | None = None,
         log_sources: frozenset[str] | None = None,
+        requested_by: User | None = None,
     ) -> dict[str, Any]:
+        """`requested_by` is the user of a manual collection; scheduled and internal runs leave it unset."""
         server = self.get_server(server_id)
         if server.status == "inactive":
             raise ValidationException(f"Server '{server.server_name}' is inactive.")
@@ -223,6 +263,22 @@ class ServerService:
         pipeline = PipelineService(self._session)
         try:
             config = SSHService.config_from_server(server)
+        except ValueError as exc:
+            self._health.record_collection_failure(
+                server,
+                error_message=str(exc),
+                health_status=HealthStatus.CREDENTIAL_ERROR,
+            )
+            server_crud.complete_collection_run(
+                self._session,
+                run,
+                status="failed",
+                stats={"processed": 0, "inserted": 0, "duplicates": 0, "failed": 1, "skipped": 0},
+                error_message=str(exc),
+            )
+            self._session.commit()
+            raise ValidationException(f"Server '{server.server_name}': {exc}") from exc
+        try:
             stats = pipeline.collect_and_process(
                 config,
                 tail_lines=tail_lines,
@@ -235,7 +291,8 @@ class ServerService:
             stats["duration_ms"] = duration_ms
             stats["server_id"] = server.id
             stats["collected_events"] = stats.get("inserted", 0)
-            ssh_failed = any(e.get("stage") == "collect" for e in stats.get("errors", []))
+            collect_errors = [e for e in stats.get("errors", []) if e.get("stage") == "collect"]
+            ssh_failed = bool(collect_errors)
             stats["success"] = not ssh_failed and stats.get("failed", 0) == 0
 
             if stats["success"]:
@@ -243,8 +300,9 @@ class ServerService:
             else:
                 self._health.record_collection_failure(
                     server,
-                    error_message="Collection pipeline failed.",
+                    error_message=collect_errors[0].get("error") if collect_errors else "Collection pipeline failed.",
                     ssh_failed=ssh_failed,
+                    health_status=collect_errors[0].get("health_status") if collect_errors else None,
                 )
 
             server_crud.complete_collection_run(
@@ -255,23 +313,41 @@ class ServerService:
             )
             self._session.commit()
             if stats.get("success"):
+                presentation = record_linux_presentation_trigger(self._session, user=requested_by, server=server, run=run)
+                if presentation is not None:
+                    stats["presentation_trigger"] = presentation["trigger"]
                 owner_id = server.owner_id or server.created_by
+                stats["collection_n8n"] = record_linux_success(
+                    self._session,
+                    collection_run_id=run.id,
+                    owner_id=owner_id,
+                    account_id=server.account_id,
+                    completed_at=getattr(run, "completed_at", None),
+                )
+                # One background detection pass for this server scope; do not start a second thread here.
                 threading.Thread(
                     target=_run_post_collection_detection,
-                    args=(owner_id, server.id),
+                    args=(owner_id, server.id, server.account_id),
                     daemon=True,
+                    name=f"post-collect-detection-{server.id}",
                 ).start()
                 stats["detection"] = {
                     "status": "queued",
-                    "message": "ML detection started in background",
+                    "message": (
+                        "Detection started in the background for this server. "
+                        "Refresh DefenSync Intelligence for status and predictions."
+                    ),
                 }
             return stats
         except Exception as exc:
-            logger.exception("Collection failed for server=%s", server_id)
+            # SSH/retrieval errors are returned as "collect" stats above, so anything raised here
+            # happened while processing or storing logs that were already retrieved.
+            logger.exception("Collection processing failed for server=%s run=%s", server_id, run.id)
+            self._session.rollback()
             self._health.record_collection_failure(
                 server,
-                error_message=str(exc),
-                ssh_failed=True,
+                error_message=f"Log processing failed: {type(exc).__name__}",
+                ssh_failed=False,
             )
             server_crud.complete_collection_run(
                 self._session,
@@ -281,7 +357,13 @@ class ServerService:
                 error_message=str(exc),
             )
             self._session.commit()
-            raise
+            raise CollectionProcessingError(
+                f"Logs were retrieved from '{server.server_name}', but processing failed "
+                f"({type(exc).__name__}). No events were stored; check the backend log for run {run.id}.",
+                stage="process",
+                run_id=run.id,
+                server_id=server.id,
+            ) from exc
 
     def collect_all_active(
         self,

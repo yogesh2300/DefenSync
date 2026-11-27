@@ -32,12 +32,27 @@ def _owner_clause(owner_id: str):
     return or_(Server.owner_id == owner_id, Server.created_by == owner_id)
 
 
-def list_servers(session: Session, *, active_only: bool = False, owner_id: str | None = None) -> list[Server]:
+def _server_scope(*, owner_id: str | None = None, account_id: str | None = None):
+    if account_id:
+        return Server.account_id == account_id
+    if owner_id:
+        return _owner_clause(owner_id)
+    return None
+
+
+def list_servers(
+    session: Session,
+    *,
+    active_only: bool = False,
+    owner_id: str | None = None,
+    account_id: str | None = None,
+) -> list[Server]:
     stmt = select(Server).order_by(desc(Server.created_at))
     if active_only:
         stmt = stmt.where(Server.status != "inactive")
-    if owner_id:
-        stmt = stmt.where(_owner_clause(owner_id))
+    scoped = _server_scope(owner_id=owner_id, account_id=account_id)
+    if scoped is not None:
+        stmt = stmt.where(scoped)
     return list(session.scalars(stmt).all())
 
 
@@ -57,6 +72,9 @@ def update_server(session: Session, server: Server, updates: Mapping[str, Any]) 
 
 
 def delete_server(session: Session, server: Server) -> None:
+    from backend.database.models import LinuxCollectionState
+
+    session.query(LinuxCollectionState).filter(LinuxCollectionState.server_id == server.id).delete()
     session.delete(server)
 
 
@@ -197,6 +215,7 @@ def health_summary(
     *,
     owner_id: str | None = None,
     server_id: str | None = None,
+    account_id: str | None = None,
 ) -> dict[str, int]:
     """Aggregate fleet health metrics from persisted probe results (no live SSH)."""
     settings = get_settings()
@@ -206,7 +225,9 @@ def health_summary(
         server = session.get(Server, server_id)
         if server is None:
             return _empty_health_summary()
-        if owner_id and (server.owner_id or server.created_by) != owner_id:
+        if account_id and server.account_id != account_id:
+            return _empty_health_summary()
+        if owner_id and not account_id and (server.owner_id or server.created_by) != owner_id:
             return _empty_health_summary()
         if server.status == "inactive":
             return {
@@ -236,8 +257,9 @@ def health_summary(
         }
 
     base = select(Server)
-    if owner_id:
-        base = base.where(_owner_clause(owner_id))
+    scoped = _server_scope(owner_id=owner_id, account_id=account_id)
+    if scoped is not None:
+        base = base.where(scoped)
 
     stmt = select(
         func.count(Server.id),
@@ -260,8 +282,9 @@ def health_summary(
             1,
         ), else_=0)),
     )
-    if owner_id:
-        stmt = stmt.where(_owner_clause(owner_id))
+    scoped = _server_scope(owner_id=owner_id, account_id=account_id)
+    if scoped is not None:
+        stmt = stmt.where(scoped)
 
     row = session.execute(stmt).one()
     total = int(row[0] or 0)

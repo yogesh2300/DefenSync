@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import socket
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
-import paramiko
 from sqlalchemy.orm import Session
 
 from backend.core.config import get_settings
@@ -19,7 +17,7 @@ from backend.database.connection import get_session
 from backend.database.models import Server
 from backend.health.status import ERROR_STATUSES, HealthStatus, OFFLINE_STATUSES, is_online
 from backend.health.types import HealthCheckResult
-from backend.services.ssh_service import SSHService
+from backend.services.ssh_service import SSHService, classify_ssh_exception
 
 logger = get_logger(__name__)
 
@@ -199,7 +197,7 @@ class HealthService:
         except ValueError as exc:
             return HealthCheckResult(
                 server_id=server.id,
-                health_status=HealthStatus.AUTHENTICATION_FAILED,
+                health_status=HealthStatus.CREDENTIAL_ERROR,
                 error_message=str(exc),
                 checked_at=checked_at,
             )
@@ -213,28 +211,7 @@ class HealthService:
 
     @staticmethod
     def _classify_exception(exc: Exception) -> str:
-        if isinstance(exc, paramiko.AuthenticationException):
-            return HealthStatus.AUTHENTICATION_FAILED
-        if isinstance(exc, paramiko.SSHException):
-            message = str(exc).lower()
-            if "authentication" in message or "auth" in message:
-                return HealthStatus.AUTHENTICATION_FAILED
-            return HealthStatus.ERROR
-        if isinstance(exc, (TimeoutError, socket.timeout)):
-            return HealthStatus.TIMEOUT
-        if isinstance(exc, (ConnectionRefusedError, ConnectionResetError, OSError)):
-            message = str(exc).lower()
-            if "timed out" in message or "timeout" in message:
-                return HealthStatus.TIMEOUT
-            return HealthStatus.UNREACHABLE
-        message = str(exc).lower()
-        if "timed out" in message or "timeout" in message:
-            return HealthStatus.TIMEOUT
-        if "authentication" in message or "auth failed" in message:
-            return HealthStatus.AUTHENTICATION_FAILED
-        if "connection" in message or "refused" in message or "unreachable" in message:
-            return HealthStatus.UNREACHABLE
-        return HealthStatus.OFFLINE
+        return classify_ssh_exception(exc)
 
     def record_collection_success(self, server: Server) -> None:
         """Update health fields after a successful log collection."""
@@ -260,12 +237,13 @@ class HealthService:
         *,
         error_message: str,
         ssh_failed: bool = True,
+        health_status: str | None = None,
     ) -> None:
         """Update health fields after a failed collection."""
         session = self._session
         if session is None:
             raise RuntimeError("HealthService.record_collection_failure requires a session.")
-        status = HealthStatus.OFFLINE if ssh_failed else HealthStatus.ERROR
+        status = health_status or (HealthStatus.OFFLINE if ssh_failed else HealthStatus.ERROR)
         server_crud.apply_health_result(
             session,
             server,

@@ -10,6 +10,9 @@ from backend.parser.patterns import (
     SECURE_FAILED_LOGIN,
     SECURE_INVALID_USER,
     SECURE_INVALID_USER_AUTH,
+    SECURE_PAM_AUTH_FAILURE,
+    SECURE_PAM_SESSION,
+    SECURE_SU_SWITCH,
     SECURE_SUCCESSFUL_LOGIN,
     SECURE_SUDO_COMMAND,
     SECURE_SUDO_SESSION,
@@ -137,11 +140,63 @@ def parse_sudo_command(raw_line: str, header: dict[str, Any]) -> dict[str, Any] 
     return None
 
 
+def parse_su_switch(raw_line: str, header: dict[str, Any]) -> dict[str, Any] | None:
+    """Detect su's own success/failure record; only lines written by the su program."""
+    if header["process"] != "su":
+        return None
+    match = SECURE_SU_SWITCH.match(header["message"])
+    if not match:
+        return None
+    return build_event(
+        event_type=EventType.FAILED_PRIVILEGE_ESCALATION if match.group("failed") else EventType.PRIVILEGE_ESCALATION,
+        message=header["message"],
+        raw_log=raw_line,
+        timestamp=header["timestamp"],
+        hostname=header["hostname"],
+        username=match.group("user"),
+        source_ip=None,
+        process=header["process"],
+    )
+
+
+def parse_pam_auth_failure(raw_line: str, header: dict[str, Any]) -> dict[str, Any] | None:
+    """Accept pam_unix authentication failures; the normalizer decides by PAM service."""
+    if not SECURE_PAM_AUTH_FAILURE.match(header["message"]):
+        return None
+    return build_event(
+        event_type=EventType.FAILED_LOGIN,
+        message=header["message"],
+        raw_log=raw_line,
+        timestamp=header["timestamp"],
+        hostname=header["hostname"],
+        process=header["process"],
+    )
+
+
+def parse_pam_session(raw_line: str, header: dict[str, Any]) -> dict[str, Any] | None:
+    """Accept pam_unix session open/close; the normalizer keeps only login services."""
+    match = SECURE_PAM_SESSION.match(header["message"])
+    if not match:
+        return None
+    return build_event(
+        event_type=EventType.SESSION_OPENED if match.group("action") == "opened" else EventType.SESSION_CLOSED,
+        message=header["message"],
+        raw_log=raw_line,
+        timestamp=header["timestamp"],
+        hostname=header["hostname"],
+        username=match.group("user"),
+        process=header["process"],
+    )
+
+
 SECURE_EVENT_PARSERS: tuple[SecureParser, ...] = (
     parse_invalid_user,
     parse_failed_login,
     parse_successful_login,
     parse_sudo_command,
+    parse_su_switch,
+    parse_pam_auth_failure,
+    parse_pam_session,
 )
 
 
@@ -158,6 +213,8 @@ def parse_secure_event(raw_line: str) -> dict[str, Any] | None:
     for parser in SECURE_EVENT_PARSERS:
         event = parser(stripped, header)
         if event is not None:
+            event.setdefault("program", header["process"])
+            event.setdefault("pid", header["pid"])
             return event
 
     return None
