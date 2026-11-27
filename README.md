@@ -359,29 +359,9 @@ DefenSync supports demonstration workflows using behavioral and OpenStack demo d
 
 Live Linux monitoring requires a reachable SSH host. Live Azure collection requires valid Azure credentials and a properly configured Log Analytics workspace.
 
-## 16. Current Limitations
 
-- Live Azure collection is implemented but has not yet been verified against a real Azure workspace in the documented tests.
-- Azure file import is separate from live Azure telemetry collection.
-- Live OpenStack API integration is not implemented.
-- Automatic cloud collection scheduling is not implemented.
-- Linux collection requires accessible SSH hosts.
-- Random Forest requires valid ground-truth labels.
-- SHAP and LIME are not currently used.
-- Automatic account blocking, session termination, and cloud resource isolation are not implemented.
-- n8n integration requires separate configuration.
 
-## 17. Future Scope
-
-- Validate and improve live cloud telemetry collection.
-- Improve behavioral anomaly detection accuracy.
-- Enhance sequential threat detection.
-- Expand cloud platform integrations.
-- Improve incident investigation and evidence reporting.
-- Explore human-approved automated response workflows.
-- Improve model evaluation using representative datasets.
-
-## 18. Project Information
+## 16. Project Information
 
 | Detail | Information |
 |---|---|
