@@ -48,7 +48,7 @@ DefenSync provides separate monitoring workspaces for Linux and Cloud environmen
 ### Cloud Threat Intelligence
 
 <p align="center">
-  <img src="imgs/cloud-intelligence.png" width="100%" alt="DefenSync Cloud Threat Intelligence" />
+  <img src="imgs/Cloud Detection.png" width="100%" alt="DefenSync Cloud Threat Intelligence" />
 </p>
 
 ## 3. Problem Statement
